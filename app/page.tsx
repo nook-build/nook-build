@@ -63,3 +63,4 @@ export default function Home() {
     </div>
   );
 }
+curl -o app/dashboard/page.tsx https://raw.githubusercontent.com/nook-build/nook-build/main/app/dashboard/page.tsx
