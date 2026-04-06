@@ -20,7 +20,6 @@ import { supabase } from '@/lib/supabase'
 const accent = '#F4A623'
 const success = '#00E676'
 const infoBlue = '#3B8BFF'
-const danger = '#FF3D57'
 const border = '#1E2535'
 const surface = '#0F1219'
 
@@ -155,6 +154,26 @@ type ProgrammeSeed = {
   percent_complete: number
   status: string
   colour: string
+}
+
+type DelayLogEntry = {
+  id: string
+  startWeek: number
+  days: number
+  reason: string
+  notes: string
+  dateLogged: string
+}
+
+type VariationEntry = {
+  id: string
+  voNumber: string
+  description: string
+  trade: string
+  value: number
+  programmeDays: number
+  status: 'pending' | 'approved' | 'rejected'
+  dateRaised: string
 }
 
 const PROGRAMME_SEED: ProgrammeSeed[] = [
@@ -4185,6 +4204,21 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     wind: null,
     humidity: null,
   })
+  const [delayLogs, setDelayLogs] = useState<DelayLogEntry[]>([])
+  const [delayDaysInput, setDelayDaysInput] = useState('1')
+  const [delayStartWeekInput, setDelayStartWeekInput] = useState('3')
+  const [delayReasonInput, setDelayReasonInput] = useState('Client delay')
+  const [delayNotesInput, setDelayNotesInput] = useState('')
+
+  const [variationRows, setVariationRows] = useState<VariationEntry[]>([])
+  const [varDesc, setVarDesc] = useState('')
+  const [varTrade, setVarTrade] = useState('')
+  const [varValue, setVarValue] = useState('')
+  const [varDays, setVarDays] = useState('0')
+  const [varStatus, setVarStatus] = useState<'pending' | 'approved' | 'rejected'>(
+    'pending',
+  )
+  const [varDate, setVarDate] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -4379,6 +4413,106 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       : handoverWeeks.overdue
         ? '0 (overdue)'
         : String(handoverWeeks.weeks)
+
+  const totalDelayDays = useMemo(
+    () => delayLogs.reduce((s, d) => s + d.days, 0),
+    [delayLogs],
+  )
+  const totalDelayWeeks = Math.round((totalDelayDays / 7) * 10) / 10
+  const originalHandoverMs = utcMillisFromIsoDate(project.handover_date)
+  const revisedHandoverMs =
+    originalHandoverMs != null ? originalHandoverMs + totalDelayDays * 86400000 : null
+  const revisedHandoverIso =
+    revisedHandoverMs != null ? new Date(revisedHandoverMs).toISOString().slice(0, 10) : null
+
+  const variationTotal = useMemo(
+    () =>
+      variationRows.reduce(
+        (s, v) => (v.status === 'rejected' ? s : s + v.value),
+        0,
+      ),
+    [variationRows],
+  )
+  const revisedContractWithVars =
+    (project.contract_value != null ? num(project.contract_value) : 0) + variationTotal
+
+  const delayPreviewDays = Math.max(1, parseInt(delayDaysInput || '1', 10))
+
+  function fmtPortalDate(iso: string | null | undefined) {
+    if (!iso) return '—'
+    const ms = utcMillisFromIsoDate(iso)
+    if (ms == null) return '—'
+    return new Date(ms).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: 'numeric',
+      timeZone: 'UTC',
+    })
+  }
+
+  function fmtPortalDateUpper(iso: string | null | undefined) {
+    return fmtPortalDate(iso).toUpperCase()
+  }
+
+  function addDelayLog(e: FormEvent) {
+    e.preventDefault()
+    const days = Math.max(1, parseInt(delayDaysInput || '1', 10))
+    const startW = Math.max(1, parseInt(delayStartWeekInput || '1', 10))
+    setDelayLogs((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        startWeek: startW,
+        days,
+        reason: delayReasonInput,
+        notes: delayNotesInput.trim(),
+        dateLogged: new Date().toISOString().slice(0, 10),
+      },
+    ])
+    setDelayDaysInput('1')
+    setDelayStartWeekInput(String(currentWeekNumber ?? 1))
+    setDelayReasonInput('Client delay')
+    setDelayNotesInput('')
+  }
+
+  function removeDelayLog(id: string) {
+    setDelayLogs((prev) => prev.filter((d) => d.id !== id))
+  }
+
+  function resetDelays() {
+    setDelayLogs([])
+  }
+
+  function addVariation(e: FormEvent) {
+    e.preventDefault()
+    if (!varDesc.trim()) return
+    const value = Math.max(0, parseFloat(varValue || '0'))
+    const days = Math.max(0, parseInt(varDays || '0', 10))
+    const idx = variationRows.length + 1
+    setVariationRows((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        voNumber: `VO-${String(idx).padStart(3, '0')}`,
+        description: varDesc.trim(),
+        trade: varTrade.trim() || '—',
+        value,
+        programmeDays: days,
+        status: varStatus,
+        dateRaised: varDate || new Date().toISOString().slice(0, 10),
+      },
+    ])
+    setVarDesc('')
+    setVarTrade('')
+    setVarValue('')
+    setVarDays('0')
+    setVarStatus('pending')
+    setVarDate('')
+  }
+
+  function removeVariation(id: string) {
+    setVariationRows((prev) => prev.filter((v) => v.id !== id))
+  }
 
   const topTabs = [
     { id: 'overview', label: 'OVERVIEW' },
@@ -4659,20 +4793,375 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       break
     case 'delays':
       content = (
-        <CommandCentreSimpleTab
-          title="Delays & Pauses"
-          subtitle="Track pause events, approved EOT impacts, and recovery actions in a single timeline view."
-          tone={danger}
-        />
+        <div className="space-y-4">
+          <div className="panel">
+            <div className="ph">
+              <div>
+                <div className="pt">PROGRAMME DELAY CONTROL</div>
+                <div className="ps">
+                  Push the entire programme forward when project is paused
+                </div>
+              </div>
+            </div>
+            <div className="delay-grid">
+              <div>
+                <div className="delay-stats-grid">
+                  <div>
+                    <div className="mini-lbl">Original Handover</div>
+                    <div className="mini-val muted">
+                      {fmtPortalDateUpper(project.handover_date)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mini-lbl">Revised Handover</div>
+                    <div className="mini-val ac">
+                      {fmtPortalDateUpper(revisedHandoverIso ?? project.handover_date)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mini-lbl">Total Delay Weeks</div>
+                    <div className="mini-val rd">{totalDelayWeeks}</div>
+                  </div>
+                  <div>
+                    <div className="mini-lbl">Programme Length</div>
+                    <div className="mini-val bl">
+                      {durationWeeks != null
+                        ? `${durationWeeks + Math.ceil(totalDelayDays / 7)} wks`
+                        : '—'}
+                    </div>
+                  </div>
+                </div>
+                <form className="delay-form-shell" onSubmit={addDelayLog}>
+                  <div className="mini-lbl" style={{ marginBottom: 10 }}>
+                    Log New Delay
+                  </div>
+                  <div className="delay-form-row3">
+                    <div>
+                      <label className="delay-lbl">DURATION</label>
+                      <input
+                        className="delay-input mono"
+                        type="number"
+                        min={1}
+                        max={365}
+                        value={delayDaysInput}
+                        onChange={(e) => setDelayDaysInput(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label className="delay-lbl">UNIT</label>
+                      <div className="unit-row">
+                        <button type="button" className="unit-btn unit-on">
+                          Days
+                        </button>
+                        <button type="button" className="unit-btn">
+                          Weeks
+                        </button>
+                      </div>
+                    </div>
+                    <div>
+                      <label className="delay-lbl">START WEEK</label>
+                      <input
+                        className="delay-input mono"
+                        type="number"
+                        min={1}
+                        max={52}
+                        value={delayStartWeekInput}
+                        onChange={(e) => setDelayStartWeekInput(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                  <div className="delay-preview">
+                    = {delayPreviewDays} day{delayPreviewDays !== 1 ? 's' : ''} delay
+                    · Programme pushes forward {delayPreviewDays} day
+                    {delayPreviewDays !== 1 ? 's' : ''}
+                  </div>
+                  <div style={{ marginBottom: 10 }}>
+                    <label className="delay-lbl">REASON FOR DELAY</label>
+                    <select
+                      className="delay-input"
+                      value={delayReasonInput}
+                      onChange={(e) => setDelayReasonInput(e.target.value)}
+                    >
+                      <option>Client delay</option>
+                      <option>Material shortage</option>
+                      <option>Weather / site conditions</option>
+                      <option>Planning / approval hold</option>
+                      <option>Contractor unavailable</option>
+                      <option>Design change</option>
+                      <option>Structural issue found</option>
+                      <option>Other</option>
+                    </select>
+                  </div>
+                  <div style={{ marginBottom: 10 }}>
+                    <label className="delay-lbl">NOTES</label>
+                    <input
+                      className="delay-input"
+                      type="text"
+                      placeholder="Additional details..."
+                      value={delayNotesInput}
+                      onChange={(e) => setDelayNotesInput(e.target.value)}
+                    />
+                  </div>
+                  <div className="delay-btn-row">
+                    <button className="btn btn-ac" type="submit">
+                      ⚠️ Log Delay &amp; Push Programme
+                    </button>
+                    <button className="btn btn-ghost" type="button" onClick={resetDelays}>
+                      Reset All
+                    </button>
+                  </div>
+                </form>
+              </div>
+              <div>
+                <div className="mini-lbl" style={{ marginBottom: 10 }}>
+                  Impact on Handover
+                </div>
+                <div className="impact-card">
+                  <div className="mini-lbl" style={{ marginBottom: 4 }}>
+                    DAYS LOST TO DELAYS
+                  </div>
+                  <div className="impact-days">{totalDelayDays}</div>
+                </div>
+                <div
+                  className="alert"
+                  style={{
+                    background:
+                      totalDelayDays === 0
+                        ? 'rgba(0,230,118,.07)'
+                        : 'rgba(255,61,87,.07)',
+                    border:
+                      totalDelayDays === 0
+                        ? '1px solid rgba(0,230,118,.2)'
+                        : '1px solid rgba(255,61,87,.2)',
+                    color: totalDelayDays === 0 ? 'var(--gr)' : 'var(--rd)',
+                  }}
+                >
+                  <span>{totalDelayDays === 0 ? '✅' : '⚠️'}</span>
+                  <span>
+                    {totalDelayDays === 0
+                      ? `No delays logged. Programme on original schedule — handover ${fmtPortalDate(project.handover_date)}.`
+                      : `${totalDelayWeeks} week(s) of delays logged. Revised handover: ${fmtPortalDate(revisedHandoverIso)}.`}
+                  </span>
+                </div>
+                <div className="mini-lbl" style={{ margin: '8px 0' }}>
+                  Delay Log
+                </div>
+                <div className="delay-log-list">
+                  {delayLogs.length === 0 ? (
+                    <div className="delay-log-empty">No delays logged yet.</div>
+                  ) : (
+                    delayLogs.map((d) => (
+                      <div key={d.id} className="delay-log-item">
+                        <div className="delay-log-top">
+                          <span>
+                            Wk {d.startWeek} · {d.reason}
+                          </span>
+                          <button
+                            type="button"
+                            className="lock-btn"
+                            onClick={() => removeDelayLog(d.id)}
+                            style={{ color: 'var(--rd)', borderColor: 'rgba(255,61,87,.3)' }}
+                          >
+                            ✕
+                          </button>
+                        </div>
+                        <div className="delay-log-meta">
+                          {d.days} day(s) · {fmtPortalDate(d.dateLogged)}
+                          {d.notes ? ` · ${d.notes}` : ''}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
       )
       break
     case 'variations':
       content = (
-        <CommandCentreSimpleTab
-          title="Variations"
-          subtitle="Review approved and pending variations with value, programme effect, and client decision status."
-          tone={accent}
-        />
+        <div className="space-y-4">
+          <div className="stats" style={{ gridTemplateColumns: 'repeat(4,1fr)', marginBottom: 14 }}>
+            <div className="sc a">
+              <div className="sl">Original Contract</div>
+              <div className="sv" style={{ color: 'var(--ac)' }}>
+                {project.contract_value != null ? formatMoneyGBP(num(project.contract_value)) : '—'}
+              </div>
+            </div>
+            <div className="sc g">
+              <div className="sl">Variations Total</div>
+              <div className="sv" style={{ color: 'var(--gr)' }}>
+                {formatMoneyGBP(variationTotal)}
+              </div>
+            </div>
+            <div className="sc b">
+              <div className="sl">Revised Contract</div>
+              <div className="sv" style={{ color: 'var(--bl)' }}>
+                {project.contract_value != null
+                  ? formatMoneyGBP(revisedContractWithVars)
+                  : '—'}
+              </div>
+            </div>
+            <div className="sc p">
+              <div className="sl">Variations Count</div>
+              <div className="sv" style={{ color: 'var(--pu)' }}>
+                {variationRows.length}
+              </div>
+            </div>
+          </div>
+          <div className="panel">
+            <div className="ph">
+              <div>
+                <div className="pt">VARIATION ORDERS</div>
+                <div className="ps">
+                  Additional works outside original contract scope · Unlimited VOs
+                </div>
+              </div>
+            </div>
+            <div style={{ padding: '14px 20px' }}>
+              <form className="variation-form-shell" onSubmit={addVariation}>
+                <div className="mini-lbl" style={{ marginBottom: 10 }}>
+                  Add New Variation Order
+                </div>
+                <div className="variation-row">
+                  <div>
+                    <label className="delay-lbl">DESCRIPTION</label>
+                    <input
+                      className="delay-input"
+                      type="text"
+                      placeholder="Describe the variation work..."
+                      value={varDesc}
+                      onChange={(e) => setVarDesc(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="delay-lbl">TRADE / ITEM</label>
+                    <input
+                      className="delay-input"
+                      type="text"
+                      placeholder="e.g. Plastering..."
+                      value={varTrade}
+                      onChange={(e) => setVarTrade(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="delay-lbl">VALUE £</label>
+                    <input
+                      className="delay-input mono"
+                      type="number"
+                      min={0}
+                      value={varValue}
+                      onChange={(e) => setVarValue(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="delay-lbl">PROG. DAYS</label>
+                    <input
+                      className="delay-input mono"
+                      type="number"
+                      min={0}
+                      value={varDays}
+                      onChange={(e) => setVarDays(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <label className="delay-lbl">STATUS</label>
+                    <select
+                      className="delay-input"
+                      value={varStatus}
+                      onChange={(e) =>
+                        setVarStatus(
+                          e.target.value as 'pending' | 'approved' | 'rejected',
+                        )
+                      }
+                    >
+                      <option value="pending">⏳ Pending</option>
+                      <option value="approved">✅ Approved</option>
+                      <option value="rejected">❌ Rejected</option>
+                    </select>
+                  </div>
+                  <button className="btn btn-ac" type="submit" style={{ padding: '7px 10px' }}>
+                    + Add VO
+                  </button>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                  <div>
+                    <label className="delay-lbl">DATE RAISED</label>
+                    <input
+                      className="delay-input mono"
+                      type="date"
+                      value={varDate}
+                      onChange={(e) => setVarDate(e.target.value)}
+                    />
+                  </div>
+                  <div />
+                </div>
+                <div className="variation-note">
+                  💡 Prog. Days = extra days this variation adds to the programme (0 if no programme impact)
+                </div>
+              </form>
+              <div style={{ overflowX: 'auto' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                  <thead>
+                    <tr>
+                      {['VO #', 'Description', 'Trade', 'Date', 'Value £', 'Status', 'Action'].map(
+                        (h) => (
+                          <th key={h} className="var-th">
+                            {h}
+                          </th>
+                        ),
+                      )}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {variationRows.length === 0 ? (
+                      <tr>
+                        <td colSpan={7} className="var-empty">
+                          No variations logged yet. Add your first VO above.
+                        </td>
+                      </tr>
+                    ) : (
+                      variationRows.map((v) => (
+                        <tr key={v.id}>
+                          <td className="var-td mono ac">{v.voNumber}</td>
+                          <td className="var-td">{v.description}</td>
+                          <td className="var-td">{v.trade}</td>
+                          <td className="var-td mono">{fmtPortalDate(v.dateRaised)}</td>
+                          <td className="var-td mono">{formatMoneyGBP(v.value)}</td>
+                          <td className="var-td">
+                            <span className={`badge ${v.status === 'approved' ? 'b-gr' : v.status === 'rejected' ? 'b-rd' : 'b-ac'}`}>
+                              {v.status}
+                            </span>
+                          </td>
+                          <td className="var-td">
+                            <button
+                              type="button"
+                              className="lock-btn"
+                              onClick={() => removeVariation(v.id)}
+                              style={{ color: 'var(--rd)', borderColor: 'rgba(255,61,87,.3)' }}
+                            >
+                              ✕
+                            </button>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                  <tfoot>
+                    <tr>
+                      <td className="var-foot" colSpan={4}>
+                        TOTAL
+                      </td>
+                      <td className="var-foot ac">{formatMoneyGBP(variationTotal)}</td>
+                      <td className="var-foot" colSpan={2} />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
       )
       break
     case 'on-track':
@@ -4742,6 +5231,277 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       </div>
 
       {content}
+      <style jsx>{`
+        .panel {
+          background: #0f1219;
+          border: 1px solid #1e2535;
+          border-radius: 16px;
+          overflow: hidden;
+        }
+        .ph {
+          padding: 12px 18px;
+          border-bottom: 1px solid #1e2535;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          background: rgba(244, 166, 35, 0.03);
+        }
+        .pt {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 16px;
+          letter-spacing: 2px;
+        }
+        .ps {
+          font-family: 'DM Mono', monospace;
+          font-size: 10px;
+          color: #4a5568;
+        }
+        .stats {
+          display: grid;
+          grid-template-columns: repeat(4, 1fr);
+          gap: 10px;
+        }
+        .sc {
+          background: #0f1219;
+          border: 1px solid #1e2535;
+          border-radius: 12px;
+          padding: 12px 14px;
+          position: relative;
+          overflow: hidden;
+        }
+        .sc::before {
+          content: '';
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          height: 2px;
+        }
+        .sc.a::before { background: #f4a623; }
+        .sc.g::before { background: #00e676; }
+        .sc.b::before { background: #3b8bff; }
+        .sc.p::before { background: #8b5cf6; }
+        .sl {
+          font-size: 9px;
+          font-family: 'DM Mono', monospace;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          color: #4a5568;
+          margin-bottom: 3px;
+        }
+        .sv {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 22px;
+          line-height: 1;
+          letter-spacing: 1px;
+        }
+        .delay-grid {
+          padding: 18px 20px;
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 20px;
+        }
+        .delay-stats-grid {
+          display: grid;
+          grid-template-columns: 1fr 1fr;
+          gap: 12px;
+          margin-bottom: 14px;
+        }
+        .mini-lbl {
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          color: #4a5568;
+        }
+        .mini-val {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 20px;
+        }
+        .mini-val.muted { color: #4a5568; }
+        .mini-val.ac { color: #f4a623; }
+        .mini-val.rd { color: #ff3d57; }
+        .mini-val.bl { color: #3b8bff; }
+        .delay-form-shell {
+          background: #161b26;
+          border: 1px solid #1e2535;
+          border-radius: 10px;
+          padding: 14px 16px;
+        }
+        .delay-form-row3 {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 10px;
+          margin-bottom: 10px;
+        }
+        .delay-lbl {
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          color: #4a5568;
+          display: block;
+          margin-bottom: 4px;
+        }
+        .delay-input {
+          width: 100%;
+          background: #0f1219;
+          border: 1px solid #1e2535;
+          border-radius: 6px;
+          padding: 7px 10px;
+          color: #e2e8f8;
+          font-size: 13px;
+          outline: none;
+        }
+        .delay-input.mono {
+          font-family: 'DM Mono', monospace;
+        }
+        .unit-row {
+          display: flex;
+          border: 1px solid #1e2535;
+          border-radius: 6px;
+          overflow: hidden;
+        }
+        .unit-btn {
+          flex: 1;
+          padding: 7px 0;
+          font-family: 'DM Mono', monospace;
+          font-size: 11px;
+          border: none;
+          background: #0f1219;
+          color: #4a5568;
+        }
+        .unit-btn.unit-on {
+          background: rgba(244, 166, 35, 0.15);
+          color: #f4a623;
+        }
+        .delay-preview {
+          background: rgba(244, 166, 35, 0.05);
+          border: 1px solid rgba(244, 166, 35, 0.15);
+          border-radius: 7px;
+          padding: 7px 12px;
+          margin-bottom: 10px;
+          font-family: 'DM Mono', monospace;
+          font-size: 10px;
+          color: #f4a623;
+        }
+        .delay-btn-row {
+          display: flex;
+          gap: 8px;
+        }
+        .impact-card {
+          background: rgba(255, 61, 87, 0.05);
+          border: 1px solid rgba(255, 61, 87, 0.2);
+          border-radius: 10px;
+          padding: 14px 16px;
+          margin-bottom: 12px;
+        }
+        .impact-days {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 32px;
+          color: #ff3d57;
+        }
+        .delay-log-list {
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+          max-height: 280px;
+          overflow-y: auto;
+        }
+        .delay-log-empty {
+          font-family: 'DM Mono', monospace;
+          font-size: 10px;
+          color: #4a5568;
+          padding: 8px;
+          background: #161b26;
+          border-radius: 6px;
+        }
+        .delay-log-item {
+          background: #161b26;
+          border: 1px solid #1e2535;
+          border-radius: 6px;
+          padding: 8px 10px;
+        }
+        .delay-log-top {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          font-family: 'DM Mono', monospace;
+          font-size: 10px;
+          color: #e2e8f8;
+        }
+        .delay-log-meta {
+          margin-top: 4px;
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          color: #4a5568;
+        }
+        .variation-form-shell {
+          background: #161b26;
+          border: 1px solid #1e2535;
+          border-radius: 10px;
+          padding: 14px 16px;
+          margin-bottom: 14px;
+        }
+        .variation-row {
+          display: grid;
+          grid-template-columns: 2fr 1fr 90px 90px 100px 110px;
+          gap: 10px;
+          align-items: end;
+          margin-bottom: 10px;
+        }
+        .variation-note {
+          margin-top: 8px;
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          color: #4a5568;
+        }
+        .var-th {
+          background: #161b26;
+          color: #4a5568;
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          padding: 8px 10px;
+          text-align: left;
+          border-bottom: 1px solid #1e2535;
+          white-space: nowrap;
+        }
+        .var-td {
+          padding: 7px 10px;
+          border-bottom: 1px solid rgba(30, 37, 53, 0.7);
+          font-size: 11px;
+        }
+        .var-td.mono {
+          font-family: 'DM Mono', monospace;
+        }
+        .var-td.ac {
+          color: #f4a623;
+        }
+        .var-empty {
+          padding: 14px 10px;
+          font-family: 'DM Mono', monospace;
+          font-size: 11px;
+          color: #4a5568;
+          text-align: center;
+        }
+        .var-foot {
+          padding: 9px 10px;
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 14px;
+          border-top: 1px solid #1e2535;
+        }
+        .var-foot.ac {
+          color: #f4a623;
+        }
+        @media (max-width: 1100px) {
+          .delay-grid {
+            grid-template-columns: 1fr;
+          }
+          .variation-row {
+            grid-template-columns: 1fr 1fr;
+          }
+        }
+      `}</style>
     </div>
   )
 }
