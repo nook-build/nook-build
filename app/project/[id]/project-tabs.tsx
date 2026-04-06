@@ -334,42 +334,6 @@ function weekOptionsFromRows(rows: ValuationRecord[]): string[] {
     .map(([w]) => w)
 }
 
-/** One valuation period (week_label) with summed certificate and sort key. */
-function valuationPeriodsSorted(rows: ValuationRecord[]) {
-  const byLabel = new Map<
-    string,
-    { cert: number; minCreated: number }
-  >()
-  for (const r of rows) {
-    const prev = byLabel.get(r.week_label)
-    const cert = num(r.amount_due)
-    const created = r.created_at ? Date.parse(r.created_at) : NaN
-    if (!prev) {
-      byLabel.set(r.week_label, {
-        cert,
-        minCreated: Number.isFinite(created) ? created : 0,
-      })
-    } else {
-      byLabel.set(r.week_label, {
-        cert: prev.cert + cert,
-        minCreated: Number.isFinite(created)
-          ? Math.min(prev.minCreated, created)
-          : prev.minCreated,
-      })
-    }
-  }
-  return [...byLabel.entries()]
-    .map(([week_label, v]) => ({
-      week_label,
-      weekCert: v.cert,
-      minCreated: v.minCreated,
-    }))
-    .sort((a, b) => {
-      if (a.minCreated !== b.minCreated) return a.minCreated - b.minCreated
-      return a.week_label.localeCompare(b.week_label)
-    })
-}
-
 /** Oldest → newest week labels for valuation navigation. */
 function valuationChronologicalWeekLabels(rows: ValuationRecord[]): string[] {
   const byLabel = new Map<string, number>()
@@ -419,23 +383,6 @@ function prevDrawnForTrade(
       if (r.week_label !== wl) continue
       if ((r.description?.trim() ?? '') !== d) continue
       sum += num(r.amount_due)
-    }
-  }
-  return sum
-}
-
-function cumulativeCertThroughWeek(
-  rows: ValuationRecord[],
-  activeWeekLabel: string,
-  chronWeeks: string[],
-): number {
-  const idx = chronWeeks.indexOf(activeWeekLabel)
-  if (idx < 0) return 0
-  let sum = 0
-  for (let i = 0; i <= idx; i++) {
-    const wl = chronWeeks[i]
-    for (const r of rows) {
-      if (r.week_label === wl) sum += num(r.amount_due)
     }
   }
   return sum
@@ -652,16 +599,23 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   const revisedContract =
     contractSum > 0 ? contractSum + variationsTotal : contractSum
 
-  const cumulativeDrawnThrough = useMemo(() => {
-    if (!activePeriod) return 0
-    return cumulativeCertThroughWeek(rows, activePeriod, chronWeeks)
-  }, [rows, activePeriod, chronWeeks])
+  const certificatesPaidTotal = useMemo(
+    () =>
+      certificates.reduce(
+        (s, c) =>
+          (c.status ?? '').toLowerCase() === 'paid' || Boolean(c.date_paid)
+            ? s + num(c.amount)
+            : s,
+        0,
+      ),
+    [certificates],
+  )
 
-  const remainingVsCert = Math.max(0, revisedContract - cumulativeDrawnThrough)
+  const remainingVsCert = Math.max(0, revisedContract - certificatesPaidTotal)
 
   const drawPctOfContract =
     revisedContract > 0
-      ? (cumulativeDrawnThrough / revisedContract) * 100
+      ? (certificatesPaidTotal / revisedContract) * 100
       : 0
 
   const totalWeeksProg = useMemo(() => {
@@ -693,7 +647,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
 
   const certBarPct =
     revisedContract > 0
-      ? Math.min(100, (cumulativeDrawnThrough / revisedContract) * 100)
+      ? Math.min(100, (certificatesPaidTotal / revisedContract) * 100)
       : 0
 
   async function refetchRows() {
@@ -836,17 +790,9 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   }, 0)
 
   const footerClaimedPct =
-    revisedContract > 0 ? (cumulativeDrawnThrough / revisedContract) * 100 : 0
+    revisedContract > 0 ? (certificatesPaidTotal / revisedContract) * 100 : 0
 
-  const certTotalPaid = useMemo(
-    () =>
-      certificates.reduce((s, c) =>
-        (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
-          ? s + num(c.amount)
-          : s,
-      0),
-    [certificates],
-  )
+  const certTotalPaid = certificatesPaidTotal
   const certOutstanding = useMemo(
     () =>
       certificates.reduce((s, c) =>
@@ -960,7 +906,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
         <div className="sc g">
           <div className="sl">Total Drawn</div>
           <div className="sv" style={{ color: 'var(--gr)' }}>
-            {formatMoneyGBP(cumulativeDrawnThrough)}
+            {formatMoneyGBP(certificatesPaidTotal)}
           </div>
           <div className="ss">{drawPctOfContract.toFixed(1)}%</div>
         </div>
@@ -1273,7 +1219,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                       <td />
                       <td />
                       <td className="foot-gr">{formatMoneyGBP(thisWeekCertificate)}</td>
-                      <td className="foot-claimed">{formatMoneyGBP(cumulativeDrawnThrough)}</td>
+                      <td className="foot-claimed">{formatMoneyGBP(certificatesPaidTotal)}</td>
                       <td className="foot-rd">{formatMoneyGBP(totalBalanceLeft)}</td>
                       <td className="foot-split">
                         <div className="split-bar-wrap foot-total-bar">
@@ -1321,10 +1267,10 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                 </div>
                 <div className="cbox cbox-gr">
                   <div className="cbox-lbl">Cumulative Drawn</div>
-                  <div className="cbox-val cbox-cum">{formatMoneyGBP(cumulativeDrawnThrough)}</div>
+                  <div className="cbox-val cbox-cum">{formatMoneyGBP(certificatesPaidTotal)}</div>
                   <div className="cbox-sub">
                     {revisedContract > 0
-                      ? `${((cumulativeDrawnThrough / revisedContract) * 100).toFixed(1)}% of ${formatMoneyGBP(revisedContract)}`
+                      ? `${((certificatesPaidTotal / revisedContract) * 100).toFixed(1)}% of ${formatMoneyGBP(revisedContract)}`
                       : '—'}
                   </div>
                 </div>
@@ -1332,7 +1278,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                   <div className="cbox-lbl">Balance to Draw</div>
                   <div className="cbox-val cbox-bal">
                     {revisedContract > 0
-                      ? formatMoneyGBP(Math.max(0, revisedContract - cumulativeDrawnThrough))
+                      ? formatMoneyGBP(Math.max(0, revisedContract - certificatesPaidTotal))
                       : '—'}
                   </div>
                 </div>
@@ -2981,6 +2927,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [valuationRows, setValuationRows] = useState<ValuationRecord[]>([])
+  const [certificates, setCertificates] = useState<CertificateRecord[]>([])
   const [valuationLoadError, setValuationLoadError] = useState('')
 
   useEffect(() => {
@@ -3031,6 +2978,28 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
       }
     }
     void loadValuations()
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadCertificates() {
+      const { data, error } = await supabase
+        .from('certificates')
+        .select('*')
+        .eq('project_id', project.id)
+        .order('date_issued', { ascending: true })
+      if (cancelled) return
+      if (error) {
+        setValuationLoadError(error.message)
+        setCertificates([])
+      } else {
+        setCertificates((data ?? []) as CertificateRecord[])
+      }
+    }
+    void loadCertificates()
     return () => {
       cancelled = true
     }
@@ -3147,25 +3116,37 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     [contractSum, project.variations_total],
   )
 
-  const valuationPeriods = useMemo(
-    () => valuationPeriodsSorted(valuationRows),
-    [valuationRows],
-  )
-
   const actualByPeriod = useMemo(() => {
+    const paid = certificates
+      .filter(
+        (c) =>
+          (c.status ?? '').toLowerCase() === 'paid' || Boolean(c.date_paid),
+      )
+      .sort((a, b) =>
+        (a.date_issued ?? '').localeCompare(b.date_issued ?? ''),
+      )
     let cumul = 0
-    return valuationPeriods.map((p) => {
-      cumul += p.weekCert
+    return paid.map((c) => {
+      cumul += num(c.amount)
       return {
-        dateMs: p.minCreated,
+        dateMs: c.date_issued
+          ? Date.parse(`${c.date_issued}T12:00:00Z`)
+          : todayUtcMidnightMs(),
         cumulative: cumul,
       }
     })
-  }, [valuationPeriods])
+  }, [certificates])
 
   const totalCertified = useMemo(
-    () => valuationRows.reduce((s, r) => s + num(r.amount_due), 0),
-    [valuationRows],
+    () =>
+      certificates.reduce(
+        (s, c) =>
+          (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
+            ? s + num(c.amount)
+            : s,
+        0,
+      ),
+    [certificates],
   )
 
   const scurveContract = revisedContract > 0 ? revisedContract : contractSum
@@ -3186,8 +3167,8 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
         ? projectStartMs + (maxWeek - minWeek + 1) * 7 * 86400000
         : projectStartMs + 18 * 7 * 86400000
     const lastPeriod =
-      valuationPeriods.length > 0
-        ? Math.max(...valuationPeriods.map((p) => p.minCreated))
+      actualByPeriod.length > 0
+        ? Math.max(...actualByPeriod.map((p) => p.dateMs))
         : 0
     const lastWeekMs =
       weekMetaMs.length > 0 ? weekMetaMs[weekMetaMs.length - 1] : programmeEnd
@@ -3205,7 +3186,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     weekMeta.length,
     maxWeek,
     minWeek,
-    valuationPeriods,
+    actualByPeriod,
     weekMetaMs,
   ])
 
@@ -4184,6 +4165,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     | 'building-control'
   >('overview')
   const [rows, setRows] = useState<ValuationRecord[]>([])
+  const [certificates, setCertificates] = useState<CertificateRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [weather, setWeather] = useState<{
@@ -4221,6 +4203,18 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         setRows([])
       } else {
         setRows(normalizeValuationRows(data as Record<string, unknown>[]))
+      }
+      const { data: cData, error: cErr } = await supabase
+        .from('certificates')
+        .select('*')
+        .eq('project_id', project.id)
+        .order('date_issued', { ascending: true })
+      if (cancelled) return
+      if (cErr) {
+        setLoadError(cErr.message)
+        setCertificates([])
+      } else {
+        setCertificates((cData ?? []) as CertificateRecord[])
       }
       setLoading(false)
     }
@@ -4312,8 +4306,15 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     contractSum > 0 ? contractSum + variationsTotal : null
 
   const totalDrawn = useMemo(
-    () => rows.reduce((s, r) => s + num(r.amount_due), 0),
-    [rows],
+    () =>
+      certificates.reduce(
+        (s, c) =>
+          (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
+            ? s + num(c.amount)
+            : s,
+        0,
+      ),
+    [certificates],
   )
 
   const remaining =
