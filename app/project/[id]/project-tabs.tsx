@@ -4331,7 +4331,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           description: String(v.description ?? ''),
           trade: String(v.trade ?? '—'),
           value: Number(v.value ?? 0),
-          programmeDays: Number(v.programme_days ?? 0),
+          programmeDays: Number(v.prog_days ?? 0),
           status:
             String(v.status ?? 'pending') === 'approved'
               ? 'approved'
@@ -4632,49 +4632,58 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     if (!varDesc.trim()) return
     const value = Math.max(0, parseFloat(varValue || '0'))
     const days = Math.max(0, parseInt(varDays || '0', 10))
-    const idx = variationRows.length + 1
+    const { count } = await supabase
+      .from('variations')
+      .select('id', { count: 'exact', head: true })
+      .eq('project_id', project.id)
+    const idx = (count ?? variationRows.length) + 1
     const voNumber = `VO-${String(idx).padStart(3, '0')}`
     const payload = {
       project_id: project.id,
-      vo_number: voNumber,
       description: varDesc.trim(),
       trade: varTrade.trim() || '—',
       value,
-      programme_days: days,
       status: varStatus,
+      created_at: new Date().toISOString(),
+      prog_days: days,
       date_raised: varDate || new Date().toISOString().slice(0, 10),
       client_approval_date: varApprovalDate || null,
+      vo_number: voNumber,
     }
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from('variations')
       .insert(payload)
-      .select('*')
-      .maybeSingle()
     if (error) {
       setLoadError(error.message)
       return
     }
-    const inserted = data as Record<string, unknown> | null
-    if (inserted) {
-      setVariationRows((prev) => [
-        ...prev,
-        {
-          id: String(inserted.id ?? crypto.randomUUID()),
-          voNumber: String(inserted.vo_number ?? voNumber),
-          description: String(inserted.description ?? payload.description),
-          trade: String(inserted.trade ?? payload.trade),
-          value: Number(inserted.value ?? value),
-          programmeDays: Number(inserted.programme_days ?? days),
+    const { data: refreshed, error: refreshErr } = await supabase
+      .from('variations')
+      .select('*')
+      .eq('project_id', project.id)
+      .order('created_at', { ascending: true })
+    if (refreshErr) {
+      setLoadError(refreshErr.message)
+    } else {
+      setVariationRows(
+        ((refreshed ?? []) as Record<string, unknown>[]).map((v, i) => ({
+          id: String(v.id ?? crypto.randomUUID()),
+          voNumber:
+            String(v.vo_number ?? '').trim() || `VO-${String(i + 1).padStart(3, '0')}`,
+          description: String(v.description ?? ''),
+          trade: String(v.trade ?? '—'),
+          value: Number(v.value ?? 0),
+          programmeDays: Number(v.prog_days ?? 0),
           status:
-            String(inserted.status ?? varStatus) === 'approved'
+            String(v.status ?? 'pending') === 'approved'
               ? 'approved'
-              : String(inserted.status ?? varStatus) === 'rejected'
+              : String(v.status ?? 'pending') === 'rejected'
                 ? 'rejected'
                 : 'pending',
-          dateRaised: String(inserted.date_raised ?? payload.date_raised),
-          approvalDate: String(inserted.client_approval_date ?? varApprovalDate),
-        },
-      ])
+          dateRaised: String(v.date_raised ?? ''),
+          approvalDate: String(v.client_approval_date ?? ''),
+        })),
+      )
     }
     setVarDesc('')
     setVarTrade('')
@@ -5244,8 +5253,8 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
                   <button type="submit" style={{ background: '#F4A623', border: 'none', color: '#000', borderRadius: 6, padding: '7px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11 }}>+ Add VO</button>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <input type="date" value={varDate} onChange={(e) => setVarDate(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
-                  <input type="date" value={varApprovalDate} onChange={(e) => setVarApprovalDate(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
+                  <input type="date" value={varDate} onFocus={(e) => e.currentTarget.showPicker?.()} onClick={(e) => e.currentTarget.showPicker?.()} onChange={(e) => setVarDate(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
+                  <input type="date" value={varApprovalDate} onFocus={(e) => e.currentTarget.showPicker?.()} onClick={(e) => e.currentTarget.showPicker?.()} onChange={(e) => setVarApprovalDate(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
                 </div>
               </form>
               <div style={{ overflowX: 'auto' }}>
