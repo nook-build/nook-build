@@ -4546,6 +4546,39 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     return fmtPortalDate(iso).toUpperCase()
   }
 
+  async function refreshVariationRowsFromDb() {
+    const { data, error } = await supabase
+      .from('variations')
+      .select(
+        'id, project_id, vo_number, description, trade, value, prog_days, status, date_raised, client_approval_date, created_at',
+      )
+      .eq('project_id', project.id)
+      .order('created_at', { ascending: true })
+    if (error) {
+      setLoadError(error.message)
+      return
+    }
+    setVariationRows(
+      ((data ?? []) as Record<string, unknown>[]).map((v, i) => ({
+        id: String(v.id ?? crypto.randomUUID()),
+        voNumber:
+          String(v.vo_number ?? '').trim() || `VO-${String(i + 1).padStart(3, '0')}`,
+        description: String(v.description ?? ''),
+        trade: String(v.trade ?? '—'),
+        value: Number(v.value ?? 0),
+        programmeDays: Number(v.prog_days ?? 0),
+        status:
+          String(v.status ?? 'pending') === 'approved'
+            ? 'approved'
+            : String(v.status ?? 'pending') === 'rejected'
+              ? 'rejected'
+              : 'pending',
+        dateRaised: String(v.date_raised ?? ''),
+        approvalDate: String(v.client_approval_date ?? ''),
+      })),
+    )
+  }
+
   async function addDelayLog(e: FormEvent) {
     e.preventDefault()
     const raw = Math.max(1, parseInt(delayDaysInput || '1', 10))
@@ -4632,59 +4665,36 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     if (!varDesc.trim()) return
     const value = Math.max(0, parseFloat(varValue || '0'))
     const days = Math.max(0, parseInt(varDays || '0', 10))
-    const { count } = await supabase
+    const countRes = await supabase
       .from('variations')
       .select('id', { count: 'exact', head: true })
       .eq('project_id', project.id)
-    const idx = (count ?? variationRows.length) + 1
+    if (countRes.error) {
+      setLoadError(countRes.error.message)
+      return
+    }
+    const idx = (countRes.count ?? variationRows.length) + 1
     const voNumber = `VO-${String(idx).padStart(3, '0')}`
     const payload = {
       project_id: project.id,
+      vo_number: voNumber,
       description: varDesc.trim(),
       trade: varTrade.trim() || '—',
       value,
-      status: varStatus,
-      created_at: new Date().toISOString(),
       prog_days: days,
+      status: varStatus,
       date_raised: varDate || new Date().toISOString().slice(0, 10),
       client_approval_date: varApprovalDate || null,
-      vo_number: voNumber,
+      created_at: new Date().toISOString(),
     }
-    const { error } = await supabase
+    const insertRes = await supabase
       .from('variations')
       .insert(payload)
-    if (error) {
-      setLoadError(error.message)
+    if (insertRes.error) {
+      setLoadError(insertRes.error.message)
       return
     }
-    const { data: refreshed, error: refreshErr } = await supabase
-      .from('variations')
-      .select('*')
-      .eq('project_id', project.id)
-      .order('created_at', { ascending: true })
-    if (refreshErr) {
-      setLoadError(refreshErr.message)
-    } else {
-      setVariationRows(
-        ((refreshed ?? []) as Record<string, unknown>[]).map((v, i) => ({
-          id: String(v.id ?? crypto.randomUUID()),
-          voNumber:
-            String(v.vo_number ?? '').trim() || `VO-${String(i + 1).padStart(3, '0')}`,
-          description: String(v.description ?? ''),
-          trade: String(v.trade ?? '—'),
-          value: Number(v.value ?? 0),
-          programmeDays: Number(v.prog_days ?? 0),
-          status:
-            String(v.status ?? 'pending') === 'approved'
-              ? 'approved'
-              : String(v.status ?? 'pending') === 'rejected'
-                ? 'rejected'
-                : 'pending',
-          dateRaised: String(v.date_raised ?? ''),
-          approvalDate: String(v.client_approval_date ?? ''),
-        })),
-      )
-    }
+    await refreshVariationRowsFromDb()
     setVarDesc('')
     setVarTrade('')
     setVarValue('')
@@ -4700,7 +4710,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       setLoadError(error.message)
       return
     }
-    setVariationRows((prev) => prev.filter((v) => v.id !== id))
+    await refreshVariationRowsFromDb()
   }
 
   const weeklyPlanRows = useMemo(() => {
