@@ -588,6 +588,10 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     return chronWeeks[chronWeeks.length - 1] ?? null
   }, [chronWeeks, periodOverride])
 
+  useEffect(() => {
+    setPctDraft({})
+  }, [activePeriod])
+
   const weekIdx = activePeriod ? chronWeeks.indexOf(activePeriod) : -1
   const weekOrdinal = weekIdx >= 0 ? weekIdx + 1 : 1
   const weekRangeStr = formatPortalWeekRangeFromStart(
@@ -749,10 +753,27 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     return Math.max(1, weeks.length + 1)
   }
 
-  async function updateRowPct(r: ValuationRecord, pct: number) {
-    const cv = num(r.contract_value)
+  function rowPctAmounts(cv: number, pct: number) {
     const pctClamped = Math.min(100, Math.max(0, pct))
     const amt = Math.round(((cv * pctClamped) / 100) * 100) / 100
+    return { pctClamped, amt }
+  }
+
+  function patchRowPctLocal(r: ValuationRecord, pct: number) {
+    const cv = num(r.contract_value)
+    const { pctClamped, amt } = rowPctAmounts(cv, pct)
+    setRows((prev) =>
+      prev.map((row) =>
+        row.id === r.id
+          ? { ...row, percent_complete: pctClamped, amount_due: amt }
+          : row,
+      ),
+    )
+  }
+
+  async function updateRowPct(r: ValuationRecord, pct: number) {
+    const cv = num(r.contract_value)
+    const { pctClamped, amt } = rowPctAmounts(cv, pct)
     setRows((prev) =>
       prev.map((row) =>
         row.id === r.id
@@ -1248,7 +1269,10 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     {active ? 'Active' : 'Pending'}
                                   </span>
                                 </td>
-                                <td>
+                                <td
+                                  onClick={(e) => e.stopPropagation()}
+                                  onMouseDown={(e) => e.stopPropagation()}
+                                >
                                   <input
                                     className={`pi ${(pctW ?? 0) > 0 ? 'hv' : ''}`}
                                     type="number"
@@ -1259,13 +1283,13 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     value={
                                       pctDraft[r.id] !== undefined
                                         ? pctDraft[r.id]
-                                        : pctW != null && pctW !== 0
+                                        : pctW != null
                                           ? String(pctW)
-                                          : pctW === 0
-                                            ? '0'
-                                            : ''
+                                          : ''
                                     }
                                     placeholder="0"
+                                    onClick={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
                                     onFocus={() => {
                                       setPctDraft((d) => ({
                                         ...d,
@@ -1273,18 +1297,35 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                           pctW != null ? String(pctW) : '',
                                       }))
                                     }}
-                                    onBlur={() => {
+                                    onBlur={(e) => {
+                                      const raw = e.target.value.trim()
                                       setPctDraft((d) => {
                                         const next = { ...d }
                                         delete next[r.id]
                                         return next
                                       })
+                                      const v =
+                                        raw === '' ||
+                                        raw === '.' ||
+                                        raw === '-'
+                                          ? 0
+                                          : parseFloat(raw)
+                                      if (Number.isNaN(v)) {
+                                        void updateRowPct(r, 0)
+                                      } else {
+                                        void updateRowPct(r, v)
+                                      }
                                     }}
                                     onChange={(e) => {
                                       const raw = e.target.value
                                       setPctDraft((d) => ({ ...d, [r.id]: raw }))
-                                      if (raw === '' || raw === '.') {
-                                        void updateRowPct(r, 0)
+                                      const t = raw.trim()
+                                      if (
+                                        t === '' ||
+                                        t === '.' ||
+                                        t === '-'
+                                      ) {
+                                        patchRowPctLocal(r, 0)
                                         return
                                       }
                                       const v = parseFloat(raw)
@@ -1380,7 +1421,10 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                   <td>
                                     <span className="badge b-ac">VO</span>
                                   </td>
-                                  <td>
+                                  <td
+                                    onClick={(e) => e.stopPropagation()}
+                                    onMouseDown={(e) => e.stopPropagation()}
+                                  >
                                     <input
                                       className={`pi ${pct > 0 ? 'hv' : ''}`}
                                       type="number"
@@ -1390,25 +1434,44 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                       value={
                                         pctDraft[voKey] !== undefined
                                           ? pctDraft[voKey]
-                                          : pct > 0
-                                            ? String(pct)
-                                            : pct === 0
-                                              ? '0'
-                                              : ''
+                                          : String(pct)
                                       }
                                       placeholder="0"
+                                      onClick={(e) => e.stopPropagation()}
+                                      onMouseDown={(e) => e.stopPropagation()}
                                       onFocus={() => {
                                         setPctDraft((d) => ({
                                           ...d,
                                           [voKey]: String(pct),
                                         }))
                                       }}
-                                      onBlur={() => {
+                                      onBlur={(e) => {
+                                        const raw = e.target.value.trim()
                                         setPctDraft((d) => {
                                           const next = { ...d }
                                           delete next[voKey]
                                           return next
                                         })
+                                        const parsed =
+                                          raw === '' ||
+                                          raw === '.' ||
+                                          raw === '-'
+                                            ? 0
+                                            : parseFloat(raw)
+                                        if (Number.isNaN(parsed)) {
+                                          setVoPctThisWeek((p) => ({
+                                            ...p,
+                                            [v.id]: 0,
+                                          }))
+                                        } else {
+                                          setVoPctThisWeek((p) => ({
+                                            ...p,
+                                            [v.id]: Math.min(
+                                              100,
+                                              Math.max(0, parsed),
+                                            ),
+                                          }))
+                                        }
                                       }}
                                       onChange={(e) => {
                                         const raw = e.target.value
@@ -1416,7 +1479,12 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                           ...d,
                                           [voKey]: raw,
                                         }))
-                                        if (raw === '' || raw === '.') {
+                                        const t = raw.trim()
+                                        if (
+                                          t === '' ||
+                                          t === '.' ||
+                                          t === '-'
+                                        ) {
                                           setVoPctThisWeek((p) => ({
                                             ...p,
                                             [v.id]: 0,
@@ -2126,6 +2194,9 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
           background: var(--s2);
           color: var(--tx);
           text-align: center;
+          position: relative;
+          z-index: 2;
+          pointer-events: auto;
         }
         .pi:focus {
           border-color: var(--ac);
@@ -4499,17 +4570,27 @@ function delayRecordToWorkingDays(row: {
   return duration
 }
 
-/** Advance UTC midnight by N weekdays (skips Saturday and Sunday). */
+/**
+ * Advance a UTC calendar date by N working days (Mon–Fri only; Sat/Sun skipped).
+ * Uses UTC date parts only — no local timezone or floating ms drift.
+ * Example: 7 working days after 2026-07-17 (Fri) → 2026-07-28 (Tue).
+ */
 function addUtcWorkingDays(startMs: number, workingDaysToAdd: number): number {
-  if (workingDaysToAdd <= 0) return startMs
-  let t = startMs
-  let remaining = workingDaysToAdd
+  if (workingDaysToAdd <= 0 || !Number.isFinite(workingDaysToAdd)) return startMs
+  let remaining = Math.floor(workingDaysToAdd)
+  const start = new Date(startMs)
+  let y = start.getUTCFullYear()
+  let mo = start.getUTCMonth()
+  let day = start.getUTCDate()
   while (remaining > 0) {
-    t += 86400000
-    const wd = new Date(t).getUTCDay()
+    const next = new Date(Date.UTC(y, mo, day + 1))
+    y = next.getUTCFullYear()
+    mo = next.getUTCMonth()
+    day = next.getUTCDate()
+    const wd = next.getUTCDay()
     if (wd !== 0 && wd !== 6) remaining -= 1
   }
-  return t
+  return Date.UTC(y, mo, day)
 }
 
 function todayUtcMidnightMs(): number {
