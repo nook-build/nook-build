@@ -16,6 +16,10 @@ import {
   formatMoneyGBP,
 } from '@/lib/format'
 import { supabase } from '@/lib/supabase'
+import {
+  addUtcWorkingDays,
+  countUtcWorkingDaysExclusiveEnd,
+} from '@/lib/working-days'
 
 const accent = '#F4A623'
 const border = '#1E2535'
@@ -700,14 +704,12 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     if (!project.start_date || !project.handover_date) {
       return Math.max(chronWeeks.length, 1)
     }
-    const m1 = /^(\d{4})-(\d{2})-(\d{2})/.exec(project.start_date.trim())
-    const m2 = /^(\d{4})-(\d{2})-(\d{2})/.exec(project.handover_date.trim())
-    if (!m1 || !m2) return Math.max(chronWeeks.length, 1)
-    const a = Date.UTC(Number(m1[1]), Number(m1[2]) - 1, Number(m1[3]))
-    const b = Date.UTC(Number(m2[1]), Number(m2[2]) - 1, Number(m2[3]))
-    const days = (b - a) / 86400000
-    if (days < 0) return Math.max(chronWeeks.length, 1)
-    return Math.max(1, Math.round(days / 7))
+    const a = utcMillisFromIsoDate(project.start_date)
+    const b = utcMillisFromIsoDate(project.handover_date)
+    if (a == null || b == null) return Math.max(chronWeeks.length, 1)
+    const wd = countUtcWorkingDaysExclusiveEnd(a, b)
+    if (wd < 0) return Math.max(chronWeeks.length, 1)
+    return Math.max(1, Math.round(wd / 5))
   }, [project.start_date, project.handover_date, chronWeeks.length])
 
   const progPct = Math.min(
@@ -3593,7 +3595,10 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     const handover = utcMillisFromIsoDate(project.handover_date)
     const shifted =
       handover != null
-        ? addUtcWorkingDays(handover, totalProgrammeShift) + 14 * 86400000
+        ? addUtcWorkingDays(
+            addUtcWorkingDays(handover, totalProgrammeShift),
+            14,
+          )
         : null
     const programmeEnd =
       weekMeta.length > 0
@@ -4570,29 +4575,6 @@ function delayRecordToWorkingDays(row: {
   return duration
 }
 
-/**
- * Advance a UTC calendar date by N working days (Mon–Fri only; Sat/Sun skipped).
- * Uses UTC date parts only — no local timezone or floating ms drift.
- * Example: 7 working days after 2026-07-17 (Fri) → 2026-07-28 (Tue).
- */
-function addUtcWorkingDays(startMs: number, workingDaysToAdd: number): number {
-  if (workingDaysToAdd <= 0 || !Number.isFinite(workingDaysToAdd)) return startMs
-  let remaining = Math.floor(workingDaysToAdd)
-  const start = new Date(startMs)
-  let y = start.getUTCFullYear()
-  let mo = start.getUTCMonth()
-  let day = start.getUTCDate()
-  while (remaining > 0) {
-    const next = new Date(Date.UTC(y, mo, day + 1))
-    y = next.getUTCFullYear()
-    mo = next.getUTCMonth()
-    day = next.getUTCDate()
-    const wd = next.getUTCDay()
-    if (wd !== 0 && wd !== 6) remaining -= 1
-  }
-  return Date.UTC(y, mo, day)
-}
-
 function todayUtcMidnightMs(): number {
   const n = new Date()
   return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate())
@@ -4608,7 +4590,10 @@ function timelinePercent(
   if (endMs <= startMs) return null
   const nowMs = todayUtcMidnightMs()
   const clamped = Math.min(Math.max(nowMs, startMs), endMs)
-  return ((clamped - startMs) / (endMs - startMs)) * 100
+  const totalWd = countUtcWorkingDaysExclusiveEnd(startMs, endMs)
+  if (totalWd <= 0) return null
+  const doneWd = countUtcWorkingDaysExclusiveEnd(startMs, clamped)
+  return (doneWd / totalWd) * 100
 }
 
 function weeksDurationBetween(
@@ -4618,9 +4603,9 @@ function weeksDurationBetween(
   const startMs = utcMillisFromIsoDate(startIso)
   const endMs = utcMillisFromIsoDate(endIso)
   if (startMs == null || endMs == null) return null
-  const days = (endMs - startMs) / 86400000
-  if (days < 0) return null
-  return Math.max(0, Math.round(days / 7))
+  if (endMs < startMs) return null
+  const wd = countUtcWorkingDaysExclusiveEnd(startMs, endMs)
+  return Math.max(0, Math.round(wd / 5))
 }
 
 function weeksUntilHandover(handoverIso: string | null): {
@@ -4630,9 +4615,9 @@ function weeksUntilHandover(handoverIso: string | null): {
   const endMs = utcMillisFromIsoDate(handoverIso)
   if (endMs == null) return { weeks: null, overdue: false }
   const nowMs = todayUtcMidnightMs()
-  const days = (endMs - nowMs) / 86400000
-  const w = Math.ceil(days / 7)
-  if (w < 0) return { weeks: 0, overdue: true }
+  if (endMs < nowMs) return { weeks: 0, overdue: true }
+  const wd = countUtcWorkingDaysExclusiveEnd(nowMs, endMs)
+  const w = Math.ceil(wd / 5)
   return { weeks: w, overdue: false }
 }
 
@@ -5022,9 +5007,30 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       ? Math.max(0, revisedContract - totalDrawn)
       : null
 
+  const totalHandoverWorkingShift = useMemo(() => {
+    const delayW = delayLogs.reduce((s, d) => s + (d.workingDays ?? 0), 0)
+    const varProg = variationRows
+      .filter((v) => v.status === 'approved')
+      .reduce((s, v) => s + v.programmeDays, 0)
+    return delayW + varProg
+  }, [delayLogs, variationRows])
+
+  const originalHandoverMs = utcMillisFromIsoDate(project.handover_date)
+  const revisedHandoverIso = useMemo(() => {
+    if (originalHandoverMs == null) return null
+    return new Date(
+      addUtcWorkingDays(originalHandoverMs, totalHandoverWorkingShift),
+    )
+      .toISOString()
+      .slice(0, 10)
+  }, [originalHandoverMs, totalHandoverWorkingShift])
+
+  const effectiveHandoverIso =
+    revisedHandoverIso ?? project.handover_date ?? null
+
   const timelinePct = useMemo(
-    () => timelinePercent(project.start_date, project.handover_date),
-    [project.start_date, project.handover_date],
+    () => timelinePercent(project.start_date, effectiveHandoverIso),
+    [project.start_date, effectiveHandoverIso],
   )
 
   const paymentsPct =
@@ -5049,8 +5055,8 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       : null
 
   const durationWeeks = useMemo(
-    () => weeksDurationBetween(project.start_date, project.handover_date),
-    [project.start_date, project.handover_date],
+    () => weeksDurationBetween(project.start_date, effectiveHandoverIso),
+    [project.start_date, effectiveHandoverIso],
   )
 
   const originalContract = project.contract_value
@@ -5083,28 +5089,11 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         .reduce((s, r) => s + num(r.amount_due), 0)
     : 0
 
-  const totalHandoverWorkingShift = useMemo(() => {
-    const delayW = delayLogs.reduce((s, d) => s + (d.workingDays ?? 0), 0)
-    const varProg = variationRows
-      .filter((v) => v.status === 'approved')
-      .reduce((s, v) => s + v.programmeDays, 0)
-    return delayW + varProg
-  }, [delayLogs, variationRows])
-
   const totalDelayDays = useMemo(
     () => delayLogs.reduce((s, d) => s + (d.workingDays ?? 0), 0),
     [delayLogs],
   )
   const totalDelayWeeks = Math.round((totalDelayDays / 5) * 10) / 10
-  const originalHandoverMs = utcMillisFromIsoDate(project.handover_date)
-  const revisedHandoverIso = useMemo(() => {
-    if (originalHandoverMs == null) return null
-    return new Date(
-      addUtcWorkingDays(originalHandoverMs, totalHandoverWorkingShift),
-    )
-      .toISOString()
-      .slice(0, 10)
-  }, [originalHandoverMs, totalHandoverWorkingShift])
 
   const handoverWeeks = useMemo(
     () => weeksUntilHandover(revisedHandoverIso ?? project.handover_date),
