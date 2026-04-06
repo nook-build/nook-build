@@ -62,4 +62,4 @@ export default function Home() {
       </main>
     </div>
   );
-}git add . && git commit -m "Fix page.tsx" && git push
+}
