@@ -176,6 +176,22 @@ type VariationEntry = {
   dateRaised: string
 }
 
+type SiteDiaryOverride = {
+  actualPct: number
+  note: string
+  rag: 'red' | 'amber' | 'green'
+}
+
+type BCInspection = {
+  id: string
+  inspectionType: string
+  date: string
+  inspectorName: string
+  result: 'pass' | 'fail' | 'advisory' | null
+  notes: string
+  status: 'complete' | 'pending'
+}
+
 const PROGRAMME_SEED: ProgrammeSeed[] = [
   {
     phase: 'Phase 1 - Groundworks',
@@ -4219,6 +4235,68 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     'pending',
   )
   const [varDate, setVarDate] = useState('')
+  const [siteDiary, setSiteDiary] = useState<Record<string, SiteDiaryOverride>>({})
+  const [bcInspections, setBcInspections] = useState<BCInspection[]>([
+    {
+      id: crypto.randomUUID(),
+      inspectionType: 'Commencement Notice',
+      date: '2026-03-09',
+      inspectorName: 'LBR - J. Smith BC1234',
+      result: 'pass',
+      notes: 'Commencement accepted',
+      status: 'complete',
+    },
+    {
+      id: crypto.randomUUID(),
+      inspectionType: 'Excavations / Foundations',
+      date: '2026-03-19',
+      inspectorName: 'LBR - J. Smith BC1234',
+      result: 'pass',
+      notes: 'Strip foundations approved to spec',
+      status: 'complete',
+    },
+    {
+      id: crypto.randomUUID(),
+      inspectionType: 'Drainage',
+      date: '2026-03-25',
+      inspectorName: 'LBR - J. Smith BC1234',
+      result: 'pass',
+      notes: 'Drainage run approved',
+      status: 'complete',
+    },
+    {
+      id: crypto.randomUUID(),
+      inspectionType: 'Damp Proof Course (DPC)',
+      date: '',
+      inspectorName: '',
+      result: null,
+      notes: '',
+      status: 'pending',
+    },
+    {
+      id: crypto.randomUUID(),
+      inspectionType: 'Oversite / Concrete Slab',
+      date: '',
+      inspectorName: '',
+      result: null,
+      notes: '',
+      status: 'pending',
+    },
+    {
+      id: crypto.randomUUID(),
+      inspectionType: 'Structural Frame',
+      date: '',
+      inspectorName: '',
+      result: null,
+      notes: '',
+      status: 'pending',
+    },
+  ])
+  const [bcType, setBcType] = useState('')
+  const [bcDate, setBcDate] = useState('')
+  const [bcInspector, setBcInspector] = useState('')
+  const [bcResult, setBcResult] = useState<'pass' | 'fail' | 'advisory'>('pass')
+  const [bcNotes, setBcNotes] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -4514,6 +4592,83 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     setVariationRows((prev) => prev.filter((v) => v.id !== id))
   }
 
+  const trackerTradeRows = useMemo(() => {
+    const byTrade = new Map<
+      string,
+      { trade: string; plannedPct: number; thisWeekPct: number }
+    >()
+    for (const r of latestRows) {
+      const trade = (r.description ?? '').trim()
+      if (!trade) continue
+      const plannedPct = num(r.cumulative_percent)
+      const thisWeekPct = num(r.percent_complete)
+      if (!byTrade.has(trade)) {
+        byTrade.set(trade, { trade, plannedPct, thisWeekPct })
+      }
+    }
+    return Array.from(byTrade.values()).slice(0, 14)
+  }, [latestRows])
+
+  const onTrackRows = useMemo(() => {
+    return trackerTradeRows.map((row) => {
+      const override = siteDiary[row.trade]
+      const actualPct = override ? override.actualPct : row.plannedPct
+      const rag = override
+        ? override.rag
+        : actualPct >= row.plannedPct
+          ? 'green'
+          : actualPct >= Math.max(0, row.plannedPct - 5)
+            ? 'amber'
+            : 'red'
+      const note = override?.note ?? '—'
+      const score =
+        row.plannedPct <= 0 ? 100 : Math.max(0, Math.min(100, (actualPct / row.plannedPct) * 100))
+      return { ...row, actualPct, rag, note, score }
+    })
+  }, [trackerTradeRows, siteDiary])
+
+  const overallOnTrackPct =
+    onTrackRows.length > 0
+      ? onTrackRows.reduce((s, r) => s + r.score, 0) / onTrackRows.length
+      : 0
+
+  const ragCounts = useMemo(
+    () => ({
+      green: onTrackRows.filter((r) => r.rag === 'green').length,
+      amber: onTrackRows.filter((r) => r.rag === 'amber').length,
+      red: onTrackRows.filter((r) => r.rag === 'red').length,
+    }),
+    [onTrackRows],
+  )
+
+  const bcComplete = bcInspections.filter((i) => i.status === 'complete').length
+  const bcPending = bcInspections.filter((i) => i.status === 'pending').length
+  const bcPass = bcInspections.filter((i) => i.result === 'pass').length
+  const bcFail = bcInspections.filter((i) => i.result === 'fail').length
+  const bcAdvisory = bcInspections.filter((i) => i.result === 'advisory').length
+
+  function addInspection(e: FormEvent) {
+    e.preventDefault()
+    if (!bcType.trim()) return
+    setBcInspections((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        inspectionType: bcType.trim(),
+        date: bcDate,
+        inspectorName: bcInspector.trim(),
+        result: bcResult,
+        notes: bcNotes.trim(),
+        status: 'complete',
+      },
+    ])
+    setBcType('')
+    setBcDate('')
+    setBcInspector('')
+    setBcResult('pass')
+    setBcNotes('')
+  }
+
   const topTabs = [
     { id: 'overview', label: 'OVERVIEW' },
     { id: 'programme', label: 'PROGRAMME + S-CURVE' },
@@ -4754,25 +4909,6 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           <CommandCentreStatCard label="Drawn Total" value={formatMoneyGBP(cumulativeDrawn)} valueColor={success} />
           <CommandCentreStatCard label="Live Rows" value={String(rows.length)} valueColor={infoBlue} />
         </div>
-      </div>
-    )
-  }
-
-  function CommandCentreSimpleTab({
-    title,
-    subtitle,
-    tone = accent,
-  }: {
-    title: string
-    subtitle: string
-    tone?: string
-  }) {
-    return (
-      <div className="rounded-xl border p-6 text-center sm:p-10" style={{ borderColor: border, backgroundColor: surface }}>
-        <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">{title.toUpperCase()}</p>
-        <h3 className="mt-2 text-xl font-semibold text-[#F8FAFC]">{title}</h3>
-        <p className="mx-auto mt-2 max-w-2xl text-sm text-[#64748B]">{subtitle}</p>
-        <div className="mx-auto mt-4 h-1 w-24 rounded-full" style={{ backgroundColor: tone }} />
       </div>
     )
   }
@@ -5166,15 +5302,191 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       break
     case 'on-track':
       content = (
-        <CommandCentreSimpleTab
-          title="On Track"
-          subtitle="RAG overview of milestones, trade readiness, and commercial health against the baseline plan."
-          tone={success}
-        />
+        <div className="space-y-4">
+          <div className="stats" style={{ gridTemplateColumns: 'repeat(5,1fr)', marginBottom: 14 }}>
+            <div className="sc a"><div className="sl">Week</div><div className="sv" style={{ color: 'var(--ac)' }}>{currentWeekDisplay.replace('Week ', 'Wk ')}</div><div className="ss">current</div></div>
+            <div className="sc g"><div className="sl">Green</div><div className="sv" style={{ color: 'var(--gr)' }}>{ragCounts.green}</div><div className="ss">on track</div></div>
+            <div className="sc b"><div className="sl">Amber</div><div className="sv" style={{ color: 'var(--ac)' }}>{ragCounts.amber}</div><div className="ss">watch</div></div>
+            <div className="sc p"><div className="sl">Red</div><div className="sv" style={{ color: 'var(--rd)' }}>{ragCounts.red}</div><div className="ss">off track</div></div>
+            <div className="sc t"><div className="sl">On Track %</div><div className="sv" style={{ color: 'var(--bl)' }}>{overallOnTrackPct.toFixed(0)}%</div><div className="ss">overall</div></div>
+          </div>
+          <div className="panel">
+            <div className="ph">
+              <div>
+                <div className="pt">WEEKLY SITE DIARY</div>
+                <div className="ps">Planned vs actual progress by trade · notes + RAG</div>
+              </div>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead>
+                  <tr>
+                    {['Trade', 'Planned %', 'Actual %', 'Site Note', 'RAG Status'].map((h) => (
+                      <th key={h} className="var-th">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {onTrackRows.length === 0 ? (
+                    <tr><td colSpan={5} className="var-empty">No trade lines available yet.</td></tr>
+                  ) : (
+                    onTrackRows.map((r) => (
+                      <tr key={r.trade}>
+                        <td className="var-td">{r.trade}</td>
+                        <td className="var-td mono">{r.plannedPct.toFixed(1)}%</td>
+                        <td className="var-td mono">
+                          <input
+                            className="delay-input mono"
+                            style={{ maxWidth: 90, padding: '4px 6px' }}
+                            type="number"
+                            min={0}
+                            max={100}
+                            value={siteDiary[r.trade]?.actualPct ?? r.actualPct}
+                            onChange={(e) =>
+                              setSiteDiary((prev) => ({
+                                ...prev,
+                                [r.trade]: {
+                                  actualPct: Math.max(0, Math.min(100, Number(e.target.value || 0))),
+                                  note: prev[r.trade]?.note ?? (r.note === '—' ? '' : r.note),
+                                  rag: prev[r.trade]?.rag ?? r.rag,
+                                },
+                              }))
+                            }
+                          />
+                        </td>
+                        <td className="var-td">
+                          <input
+                            className="delay-input"
+                            style={{ padding: '4px 6px' }}
+                            type="text"
+                            placeholder="Site update..."
+                            value={siteDiary[r.trade]?.note ?? (r.note === '—' ? '' : r.note)}
+                            onChange={(e) =>
+                              setSiteDiary((prev) => ({
+                                ...prev,
+                                [r.trade]: {
+                                  actualPct: prev[r.trade]?.actualPct ?? r.actualPct,
+                                  note: e.target.value,
+                                  rag: prev[r.trade]?.rag ?? r.rag,
+                                },
+                              }))
+                            }
+                          />
+                        </td>
+                        <td className="var-td">
+                          <select
+                            className="delay-input"
+                            style={{ padding: '4px 6px', maxWidth: 150 }}
+                            value={siteDiary[r.trade]?.rag ?? r.rag}
+                            onChange={(e) =>
+                              setSiteDiary((prev) => ({
+                                ...prev,
+                                [r.trade]: {
+                                  actualPct: prev[r.trade]?.actualPct ?? r.actualPct,
+                                  note: prev[r.trade]?.note ?? (r.note === '—' ? '' : r.note),
+                                  rag: e.target.value as 'red' | 'amber' | 'green',
+                                },
+                              }))
+                            }
+                          >
+                            <option value="green">🟢 Green</option>
+                            <option value="amber">🟠 Amber</option>
+                            <option value="red">🔴 Red</option>
+                          </select>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       )
       break
     case 'building-control':
-      content = <PlaceholderPanel title="Building Control" />
+      content = (
+        <div className="space-y-4">
+          <div className="stats" style={{ gridTemplateColumns: 'repeat(5,1fr)', marginBottom: 16 }}>
+            <div className="sc g"><div className="sl">Passed</div><div className="sv" style={{ color: 'var(--gr)' }}>{bcPass}</div><div className="ss">inspections</div></div>
+            <div className="sc r"><div className="sl">Failed</div><div className="sv" style={{ color: 'var(--rd)' }}>{bcFail}</div><div className="ss">inspections</div></div>
+            <div className="sc a"><div className="sl">Advisory</div><div className="sv" style={{ color: 'var(--ac)' }}>{bcAdvisory}</div><div className="ss">inspections</div></div>
+            <div className="sc b"><div className="sl">Complete</div><div className="sv" style={{ color: 'var(--bl)' }}>{bcComplete}</div><div className="ss">logged</div></div>
+            <div className="sc t"><div className="sl">Pending</div><div className="sv" style={{ color: 'var(--tl)' }}>{bcPending}</div><div className="ss">awaiting</div></div>
+          </div>
+          <div className="panel" style={{ marginBottom: 14 }}>
+            <div className="ph"><div><div className="pt">ADD INSPECTION</div><div className="ps">Log a new Building Control inspection</div></div></div>
+            <form onSubmit={addInspection}>
+              <div className="bc-form-row">
+                <div>
+                  <div className="sl" style={{ marginBottom: 5 }}>Inspection Type</div>
+                  <input className="delay-input" value={bcType} onChange={(e) => setBcType(e.target.value)} placeholder="Select type..." />
+                </div>
+                <div>
+                  <div className="sl" style={{ marginBottom: 5 }}>Inspection Date</div>
+                  <input className="delay-input mono" type="date" value={bcDate} onChange={(e) => setBcDate(e.target.value)} />
+                </div>
+                <div>
+                  <div className="sl" style={{ marginBottom: 5 }}>Inspector Name</div>
+                  <input className="delay-input" value={bcInspector} onChange={(e) => setBcInspector(e.target.value)} placeholder="Name / Ref no." />
+                </div>
+                <div>
+                  <div className="sl" style={{ marginBottom: 5 }}>Result</div>
+                  <select className="delay-input" value={bcResult} onChange={(e) => setBcResult(e.target.value as 'pass' | 'fail' | 'advisory')}>
+                    <option value="pass">✅ Pass</option>
+                    <option value="fail">❌ Fail</option>
+                    <option value="advisory">⚠️ Advisory</option>
+                  </select>
+                </div>
+              </div>
+              <div className="bc-form-row2">
+                <div>
+                  <div className="sl" style={{ marginBottom: 5 }}>Notes / Conditions</div>
+                  <input className="delay-input" value={bcNotes} onChange={(e) => setBcNotes(e.target.value)} placeholder="Any conditions, actions required or notes..." />
+                </div>
+                <button className="btn btn-ac" type="submit" style={{ padding: '7px 20px', whiteSpace: 'nowrap' }}>+ Add Inspection</button>
+              </div>
+            </form>
+          </div>
+          <div className="panel">
+            <div className="ph">
+              <div><div className="pt">INSPECTION LOG</div><div className="ps">8 Deanhill Road · All Building Control inspections</div></div>
+              <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 10, color: 'var(--mu)', padding: '4px 8px', background: 'rgba(0,230,118,.08)', borderRadius: 4 }}>
+                <span style={{ color: 'var(--gr)' }}>{bcComplete} / {bcInspections.length} complete</span>
+              </div>
+            </div>
+            <div style={{ overflowX: 'auto' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr>{['Inspection Type', 'Date', 'Inspector', 'Result', 'Notes', 'Status'].map((h) => <th key={h} className="var-th">{h}</th>)}</tr></thead>
+                <tbody>
+                  {bcInspections.map((b) => (
+                    <tr key={b.id}>
+                      <td className="var-td">{b.inspectionType}</td>
+                      <td className="var-td mono">{fmtPortalDate(b.date)}</td>
+                      <td className="var-td">{b.inspectorName || '—'}</td>
+                      <td className="var-td">
+                        {b.result == null ? (
+                          <span className="badge b-muted">pending</span>
+                        ) : (
+                          <span className={`badge ${b.result === 'pass' ? 'b-gr' : b.result === 'fail' ? 'b-rd' : 'b-ac'}`}>
+                            {b.result}
+                          </span>
+                        )}
+                      </td>
+                      <td className="var-td">{b.notes || '—'}</td>
+                      <td className="var-td">
+                        <span className={`badge ${b.status === 'complete' ? 'b-gr' : 'b-ac'}`}>
+                          {b.status}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )
       break
     default:
       content = overviewContent
@@ -5281,6 +5593,8 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         .sc.g::before { background: #00e676; }
         .sc.b::before { background: #3b8bff; }
         .sc.p::before { background: #8b5cf6; }
+        .sc.r::before { background: #ff3d57; }
+        .sc.t::before { background: #00bfa5; }
         .sl {
           font-size: 9px;
           font-family: 'DM Mono', monospace;
@@ -5294,6 +5608,13 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           font-size: 22px;
           line-height: 1;
           letter-spacing: 1px;
+        }
+        .ss {
+          margin-top: 2px;
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          color: #4a5568;
+          text-transform: lowercase;
         }
         .delay-grid {
           padding: 18px 20px;
@@ -5454,6 +5775,25 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           font-size: 9px;
           color: #4a5568;
         }
+        .bc-form-row {
+          padding: 16px 18px;
+          display: grid;
+          grid-template-columns: 2fr 1fr 1fr 1fr;
+          gap: 12px;
+          align-items: end;
+        }
+        .bc-form-row2 {
+          padding: 0 18px 16px;
+          display: grid;
+          grid-template-columns: 1fr auto;
+          gap: 12px;
+          align-items: end;
+        }
+        .b-muted {
+          background: rgba(74, 85, 104, 0.22);
+          border: 1px solid rgba(74, 85, 104, 0.35);
+          color: #94a3b8;
+        }
         .var-th {
           background: #161b26;
           color: #4a5568;
@@ -5499,6 +5839,12 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           }
           .variation-row {
             grid-template-columns: 1fr 1fr;
+          }
+          .bc-form-row {
+            grid-template-columns: 1fr 1fr;
+          }
+          .bc-form-row2 {
+            grid-template-columns: 1fr;
           }
         }
       `}</style>
