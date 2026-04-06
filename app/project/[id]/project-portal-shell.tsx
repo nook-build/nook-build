@@ -15,6 +15,7 @@ const mainBg = '#080A0F'
 
 const SECTION_HEADINGS: Record<PortalSection, string> = {
   'command-centre': 'Command Centre',
+  programme: 'Programme',
   documents: 'Documents',
   'site-photos': 'Site Photos',
   messages: 'Messages',
@@ -169,7 +170,10 @@ const NAV_GROUPS: { heading: string; items: NavItemDef[] }[] = [
   },
   {
     heading: 'WORK',
-    items: [{ id: 'task-board', label: 'Task Board', Icon: IconClipboard }],
+    items: [
+      { id: 'programme', label: 'Programme', Icon: IconChart },
+      { id: 'task-board', label: 'Task Board', Icon: IconClipboard },
+    ],
   },
   {
     heading: 'TEAM',

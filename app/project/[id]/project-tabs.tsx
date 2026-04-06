@@ -4,6 +4,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type FormEvent,
 } from 'react'
@@ -42,6 +43,7 @@ export type ProjectDetail = {
 
 export type PortalSection =
   | 'command-centre'
+  | 'programme'
   | 'documents'
   | 'site-photos'
   | 'messages'
@@ -64,6 +66,8 @@ function renderPortalSection(
   switch (section) {
     case 'command-centre':
       return <CommandCentrePanel project={project} />
+    case 'programme':
+      return <ProgrammeTab project={project} />
     case 'documents':
       return <DocumentsTab project={project} />
     case 'valuation':
@@ -71,7 +75,7 @@ function renderPortalSection(
     case 'site-photos':
       return <PlaceholderPanel title="Site Photos" />
     case 'messages':
-      return <PlaceholderPanel title="Messages" />
+      return <MessagesTab project={project} />
     case 'email-trail':
       return <PlaceholderPanel title="Email Trail" />
     case 'building-control':
@@ -112,6 +116,138 @@ type ValuationRecord = {
   line_order: number
   created_at: string | null
 }
+
+type MessageRecord = {
+  id: string
+  project_id: string
+  sender: string
+  content: string
+  created_at: string | null
+}
+
+type ProgrammeItemRecord = {
+  id: string
+  project_id: string
+  trade_name: string
+  phase: string
+  start_week: number | string
+  end_week: number | string
+  percent_complete: number | string | null
+  status: string | null
+  colour: string | null
+}
+
+type ProgrammeSeed = {
+  trade_name: string
+  phase: string
+  start_week: number
+  end_week: number
+  percent_complete: number
+  status: string
+  colour: string
+}
+
+const PROGRAMME_SEED: ProgrammeSeed[] = [
+  {
+    phase: 'Phase 1 - Groundworks',
+    trade_name: 'Demolition',
+    start_week: 1,
+    end_week: 2,
+    percent_complete: 100,
+    status: 'complete',
+    colour: '#F4A623',
+  },
+  {
+    phase: 'Phase 1 - Groundworks',
+    trade_name: 'Foundation',
+    start_week: 2,
+    end_week: 5,
+    percent_complete: 70,
+    status: 'in_progress',
+    colour: '#F4A623',
+  },
+  {
+    phase: 'Phase 1 - Groundworks',
+    trade_name: 'Drainage',
+    start_week: 4,
+    end_week: 6,
+    percent_complete: 20,
+    status: 'in_progress',
+    colour: '#F4A623',
+  },
+  {
+    phase: 'Phase 2 - Structure',
+    trade_name: 'Walls',
+    start_week: 6,
+    end_week: 9,
+    percent_complete: 0,
+    status: 'not_started',
+    colour: '#3B8BFF',
+  },
+  {
+    phase: 'Phase 2 - Structure',
+    trade_name: 'Beams',
+    start_week: 8,
+    end_week: 10,
+    percent_complete: 0,
+    status: 'not_started',
+    colour: '#3B8BFF',
+  },
+  {
+    phase: 'Phase 2 - Structure',
+    trade_name: 'Roof',
+    start_week: 10,
+    end_week: 12,
+    percent_complete: 0,
+    status: 'not_started',
+    colour: '#3B8BFF',
+  },
+  {
+    phase: 'Phase 3 - Fit Out',
+    trade_name: 'Windows',
+    start_week: 11,
+    end_week: 13,
+    percent_complete: 0,
+    status: 'not_started',
+    colour: '#00BCD4',
+  },
+  {
+    phase: 'Phase 3 - Fit Out',
+    trade_name: 'Electrical',
+    start_week: 12,
+    end_week: 15,
+    percent_complete: 0,
+    status: 'not_started',
+    colour: '#00BCD4',
+  },
+  {
+    phase: 'Phase 3 - Fit Out',
+    trade_name: 'Plumbing',
+    start_week: 12,
+    end_week: 15,
+    percent_complete: 0,
+    status: 'not_started',
+    colour: '#00BCD4',
+  },
+  {
+    phase: 'Phase 3 - Fit Out',
+    trade_name: 'Plastering',
+    start_week: 14,
+    end_week: 17,
+    percent_complete: 0,
+    status: 'not_started',
+    colour: '#00BCD4',
+  },
+  {
+    phase: 'Phase 3 - Fit Out',
+    trade_name: 'Flooring',
+    start_week: 16,
+    end_week: 18,
+    percent_complete: 0,
+    status: 'not_started',
+    colour: '#00BCD4',
+  },
+]
 
 function num(v: number | string | null | undefined) {
   if (v == null) return 0
@@ -1247,6 +1383,552 @@ function DocumentsTab({ project }: { project: ProjectDetail }) {
                 </tbody>
               </table>
             </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function normalizeProgrammeItem(
+  item: ProgrammeSeed | ProgrammeItemRecord,
+): ProgrammeSeed {
+  const start = Math.max(1, Math.round(num(item.start_week)))
+  const end = Math.max(start, Math.round(num(item.end_week)))
+  const pct = Math.min(100, Math.max(0, num(item.percent_complete)))
+  const status =
+    item.status ??
+    (pct >= 100 ? 'complete' : pct > 0 ? 'in_progress' : 'not_started')
+  return {
+    phase: item.phase,
+    trade_name: item.trade_name,
+    start_week: start,
+    end_week: end,
+    percent_complete: pct,
+    status,
+    colour: item.colour ?? accent,
+  }
+}
+
+function ProgrammeTab({ project }: { project: ProjectDetail }) {
+  const [rows, setRows] = useState<ProgrammeSeed[]>(PROGRAMME_SEED)
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      const { data, error } = await supabase
+        .from('programme_items')
+        .select(
+          'id, project_id, trade_name, phase, start_week, end_week, percent_complete, status, colour',
+        )
+        .eq('project_id', project.id)
+        .order('start_week', { ascending: true })
+      if (cancelled) return
+      if (error) {
+        setLoadError(error.message)
+        setRows(PROGRAMME_SEED)
+      } else {
+        const fetched = (data ?? []) as ProgrammeItemRecord[]
+        setRows(
+          fetched.length > 0
+            ? fetched.map(normalizeProgrammeItem)
+            : PROGRAMME_SEED.map(normalizeProgrammeItem),
+        )
+      }
+      setLoading(false)
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
+
+  const minWeek = useMemo(
+    () => Math.min(...rows.map((r) => r.start_week), 1),
+    [rows],
+  )
+  const maxWeek = useMemo(
+    () => Math.max(...rows.map((r) => r.end_week), 18),
+    [rows],
+  )
+  const weekRange = useMemo(
+    () => Array.from({ length: maxWeek - minWeek + 1 }, (_, i) => i + minWeek),
+    [minWeek, maxWeek],
+  )
+
+  const grouped = useMemo(() => {
+    const m = new Map<string, ProgrammeSeed[]>()
+    for (const r of rows) {
+      if (!m.has(r.phase)) m.set(r.phase, [])
+      m.get(r.phase)!.push(r)
+    }
+    return [...m.entries()]
+  }, [rows])
+
+  const todayWeek = useMemo(() => {
+    if (!project.start_date) return null
+    const startMs = utcMillisFromIsoDate(project.start_date)
+    if (startMs == null) return null
+    const nowMs = todayUtcMidnightMs()
+    const elapsedDays = (nowMs - startMs) / 86400000
+    return Math.max(1, Math.floor(elapsedDays / 7) + 1)
+  }, [project.start_date])
+
+  const todayLineLeftPct = useMemo(() => {
+    if (todayWeek == null) return null
+    if (weekRange.length === 0) return null
+    const span = maxWeek - minWeek + 1
+    if (span <= 0) return null
+    const pos = ((todayWeek - minWeek + 0.5) / span) * 100
+    return Math.max(0, Math.min(100, pos))
+  }, [todayWeek, minWeek, maxWeek, weekRange.length])
+
+  const sCurve = useMemo(() => {
+    const points = weekRange.map((w) => {
+      const total = rows.length || 1
+      const plannedDone = rows.filter((r) => r.end_week <= w).length
+      const actualDone = rows.filter(
+        (r) => r.percent_complete >= 100 && r.end_week <= w,
+      ).length
+      return {
+        week: w,
+        planned: (plannedDone / total) * 100,
+        actual: (actualDone / total) * 100,
+      }
+    })
+    return points
+  }, [rows, weekRange])
+
+  function pctColor(pct: number) {
+    if (pct >= 100) return '#00E676'
+    if (pct > 0) return '#F4A623'
+    return '#94A3B8'
+  }
+
+  return (
+    <div className="space-y-8">
+      <div
+        className="relative overflow-hidden rounded-xl border"
+        style={{ borderColor: border, backgroundColor: surface }}
+      >
+        <div
+          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
+          style={{ background: `linear-gradient(90deg, ${accent}, transparent 70%)` }}
+          aria-hidden
+        />
+        <div className="p-5 sm:p-7">
+          <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
+            PROGRAMME
+          </p>
+          <h2 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC] sm:text-xl">
+            Programme + S-Curve
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-[#64748B]">
+            Gantt schedule by trade with completion status and weekly progress
+            curve.
+          </p>
+          {loadError ? (
+            <p className="mt-3 text-sm text-[#FF3D57]" role="alert">
+              Could not load programme items: {loadError}. Showing sample programme.
+            </p>
+          ) : null}
+        </div>
+      </div>
+
+      <div
+        className="relative overflow-hidden rounded-xl border"
+        style={{ borderColor: border, backgroundColor: surface }}
+      >
+        <div className="p-5 sm:p-7">
+          <div className="mb-4 flex items-center justify-between">
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
+              Gantt chart
+            </h3>
+            {loading ? <span className="text-xs text-[#64748B]">Loading…</span> : null}
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-[#1E2535]">
+            <div className="min-w-[980px]">
+              <div
+                className="grid border-b border-[#1E2535] bg-[#111620]"
+                style={{ gridTemplateColumns: `240px repeat(${weekRange.length}, minmax(38px, 1fr))` }}
+              >
+                <div className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+                  Trade
+                </div>
+                {weekRange.map((w) => (
+                  <div
+                    key={`week-${w}`}
+                    className="border-l border-[#1E2535] px-1 py-3 text-center text-[10px] font-semibold tracking-wider text-[#94A3B8]"
+                  >
+                    W{w}
+                  </div>
+                ))}
+              </div>
+
+              <div className="relative bg-[#080A0F]">
+                {todayLineLeftPct != null ? (
+                  <div
+                    className="pointer-events-none absolute bottom-0 top-0 z-20 w-[2px]"
+                    style={{
+                      left: `calc(240px + (${todayLineLeftPct}% * (100% - 240px) / 100))`,
+                      backgroundColor: '#FF3D57',
+                    }}
+                    aria-label="Today marker"
+                  />
+                ) : null}
+
+                {grouped.map(([phase, items]) => (
+                  <div key={phase} className="border-t border-[#1E2535] first:border-t-0">
+                    <div className="bg-[#0C1018] px-4 py-2 text-xs font-semibold tracking-wide text-[#F4A623]">
+                      {phase}
+                    </div>
+                    {items.map((item) => {
+                      const startCol = item.start_week - minWeek + 2
+                      const endCol = item.end_week - minWeek + 3
+                      return (
+                        <div
+                          key={`${phase}-${item.trade_name}`}
+                          className="grid border-t border-[#161b27]"
+                          style={{ gridTemplateColumns: `240px repeat(${weekRange.length}, minmax(38px, 1fr))` }}
+                        >
+                          <div className="px-4 py-3">
+                            <p className="text-sm font-medium text-[#E2E8F8]">{item.trade_name}</p>
+                            <p className="mt-0.5 text-xs text-[#64748B]">
+                              W{item.start_week} → W{item.end_week}
+                            </p>
+                          </div>
+                          <div
+                            className="relative col-span-full row-start-1 ml-[240px] grid h-full"
+                            style={{ gridTemplateColumns: `repeat(${weekRange.length}, minmax(38px, 1fr))` }}
+                          >
+                            {weekRange.map((w) => (
+                              <div key={`${item.trade_name}-cell-${w}`} className="border-l border-[#1E2535]" />
+                            ))}
+                            <div
+                              className="z-10 mx-1 my-2 rounded-full border"
+                              style={{
+                                gridColumn: `${startCol - 1} / ${endCol - 1}`,
+                                borderColor: `${item.colour}80`,
+                                backgroundColor: `${item.colour}2B`,
+                              }}
+                            >
+                              <div
+                                className="h-full rounded-full"
+                                style={{
+                                  width: `${Math.min(100, Math.max(0, item.percent_complete))}%`,
+                                  backgroundColor: item.colour,
+                                }}
+                              />
+                            </div>
+                            <div
+                              className="z-20 mr-2 self-center justify-self-end text-xs font-semibold tabular-nums"
+                              style={{ color: pctColor(item.percent_complete) }}
+                            >
+                              {Math.round(item.percent_complete)}%
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div
+        className="relative overflow-hidden rounded-xl border"
+        style={{ borderColor: border, backgroundColor: surface }}
+      >
+        <div className="p-5 sm:p-7">
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
+            S-Curve
+          </h3>
+          <p className="mt-1 text-sm text-[#64748B]">
+            Planned vs actual completion by week.
+          </p>
+          <div className="mt-5 overflow-x-auto rounded-xl border border-[#1E2535] bg-[#080A0F] p-4">
+            <svg viewBox="0 0 860 280" className="h-[280px] w-full min-w-[760px]">
+              <rect x="0" y="0" width="860" height="280" fill="transparent" />
+              {[0, 25, 50, 75, 100].map((tick) => {
+                const y = 20 + ((100 - tick) / 100) * 220
+                return (
+                  <g key={`y-${tick}`}>
+                    <line x1="50" y1={y} x2="830" y2={y} stroke="#1E2535" strokeWidth="1" />
+                    <text x="10" y={y + 4} fill="#64748B" fontSize="11">
+                      {tick}%
+                    </text>
+                  </g>
+                )
+              })}
+              {sCurve.length > 1 ? (
+                <>
+                  <polyline
+                    fill="none"
+                    stroke="#F4A623"
+                    strokeWidth="3"
+                    points={sCurve
+                      .map((p, i) => {
+                        const x = 50 + (i / (sCurve.length - 1)) * 780
+                        const y = 20 + ((100 - p.planned) / 100) * 220
+                        return `${x},${y}`
+                      })
+                      .join(' ')}
+                  />
+                  <polyline
+                    fill="none"
+                    stroke="#00E676"
+                    strokeWidth="3"
+                    points={sCurve
+                      .map((p, i) => {
+                        const x = 50 + (i / (sCurve.length - 1)) * 780
+                        const y = 20 + ((100 - p.actual) / 100) * 220
+                        return `${x},${y}`
+                      })
+                      .join(' ')}
+                  />
+                </>
+              ) : null}
+              {weekRange.map((w, i) => {
+                const x = 50 + (i / Math.max(1, weekRange.length - 1)) * 780
+                return (
+                  <text key={`x-${w}`} x={x} y="268" textAnchor="middle" fill="#64748B" fontSize="10">
+                    W{w}
+                  </text>
+                )
+              })}
+            </svg>
+            <div className="mt-3 flex flex-wrap gap-4 text-xs">
+              <span className="inline-flex items-center gap-2 text-[#94A3B8]">
+                <span className="h-2 w-6 rounded-full bg-[#F4A623]" />
+                Planned
+              </span>
+              <span className="inline-flex items-center gap-2 text-[#94A3B8]">
+                <span className="h-2 w-6 rounded-full bg-[#00E676]" />
+                Actual
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function MessagesTab({ project }: { project: ProjectDetail }) {
+  const [rows, setRows] = useState<MessageRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [sendError, setSendError] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [sender, setSender] = useState('Admin')
+  const [content, setContent] = useState('')
+  const endRef = useRef<HTMLDivElement | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      const { data, error } = await supabase
+        .from('messages')
+        .select('id, project_id, sender, content, created_at')
+        .eq('project_id', project.id)
+        .order('created_at', { ascending: true })
+      if (cancelled) return
+      if (error) {
+        setLoadError(error.message)
+        setRows([])
+      } else {
+        setRows((data ?? []) as MessageRecord[])
+      }
+      setLoading(false)
+    }
+    void load()
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
+
+  useEffect(() => {
+    const channel = supabase
+      .channel(`project-messages:${project.id}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'messages',
+          filter: `project_id=eq.${project.id}`,
+        },
+        (payload) => {
+          const incoming = payload.new as MessageRecord
+          setRows((prev) => {
+            if (prev.some((m) => m.id === incoming.id)) return prev
+            return [...prev, incoming].sort(
+              (a, b) =>
+                Date.parse(a.created_at ?? '') - Date.parse(b.created_at ?? ''),
+            )
+          })
+        },
+      )
+      .subscribe()
+
+    return () => {
+      void supabase.removeChannel(channel)
+    }
+  }, [project.id])
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [rows.length])
+
+  async function handleSend(e: FormEvent) {
+    e.preventDefault()
+    setSendError('')
+    const senderName = sender.trim()
+    const body = content.trim()
+    if (!senderName) {
+      setSendError('Sender name is required.')
+      return
+    }
+    if (!body) {
+      setSendError('Message cannot be empty.')
+      return
+    }
+
+    setSaving(true)
+    const { data, error } = await supabase
+      .from('messages')
+      .insert({
+        project_id: project.id,
+        sender: senderName,
+        content: body,
+        created_at: new Date().toISOString(),
+      })
+      .select('id, project_id, sender, content, created_at')
+      .single()
+    setSaving(false)
+
+    if (error) {
+      setSendError(error.message)
+      return
+    }
+
+    if (data) {
+      setRows((prev) => {
+        if (prev.some((m) => m.id === data.id)) return prev
+        return [...prev, data as MessageRecord]
+      })
+    }
+    setContent('')
+  }
+
+  return (
+    <div className="space-y-6">
+      <div
+        className="relative overflow-hidden rounded-xl border"
+        style={{ borderColor: border, backgroundColor: surface }}
+      >
+        <div
+          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
+          style={{
+            background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
+          }}
+          aria-hidden
+        />
+        <div className="p-5 sm:p-7">
+          <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
+            PROJECT CHAT
+          </p>
+          <h2 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC] sm:text-xl">
+            Messages
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-[#64748B]">
+            Real-time conversation between admin and client for this project.
+          </p>
+
+          <div
+            className="mt-6 max-h-[420px] overflow-y-auto rounded-xl border p-4 sm:p-5"
+            style={{ borderColor: border, backgroundColor: '#080A0F' }}
+          >
+            {loading ? (
+              <p className="text-sm text-[#64748B]">Loading messages…</p>
+            ) : loadError ? (
+              <p className="text-sm text-[#FF3D57]" role="alert">
+                Could not load messages: {loadError}
+              </p>
+            ) : rows.length === 0 ? (
+              <p className="text-sm text-[#94A3B8]">No messages yet</p>
+            ) : (
+              <ul className="space-y-3">
+                {rows.map((m) => {
+                  const isAdmin = m.sender.toLowerCase().includes('admin')
+                  return (
+                    <li
+                      key={m.id}
+                      className={`flex ${isAdmin ? 'justify-end' : 'justify-start'}`}
+                    >
+                      <article
+                        className="max-w-[85%] rounded-2xl border px-3.5 py-3 shadow-sm sm:max-w-[75%]"
+                        style={{
+                          borderColor: isAdmin ? '#F4A62366' : border,
+                          backgroundColor: isAdmin ? '#F4A62322' : '#1A1F2B',
+                        }}
+                      >
+                        <p className="text-[11px] font-semibold uppercase tracking-wider text-[#94A3B8]">
+                          {m.sender}
+                        </p>
+                        <p className="mt-1 whitespace-pre-wrap text-sm leading-relaxed text-[#E2E8F8]">
+                          {m.content}
+                        </p>
+                        <p className="mt-2 text-right text-[11px] text-[#64748B]">
+                          {formatInstantAsDate(m.created_at)}
+                        </p>
+                      </article>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+            <div ref={endRef} />
+          </div>
+
+          <form
+            onSubmit={handleSend}
+            className="mt-5 grid gap-3 sm:grid-cols-[180px_1fr_auto]"
+          >
+            <input
+              value={sender}
+              onChange={(e) => setSender(e.target.value)}
+              placeholder="Sender (e.g. Admin)"
+              className={inputClass}
+              aria-label="Sender name"
+            />
+            <input
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="Type a message…"
+              className={inputClass}
+              aria-label="Message content"
+            />
+            <button
+              type="submit"
+              disabled={saving}
+              className="rounded-lg px-5 py-2.5 text-sm font-semibold text-black transition hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F4A623]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0F1219] disabled:opacity-50"
+              style={{ backgroundColor: accent }}
+            >
+              {saving ? 'Sending…' : 'Send'}
+            </button>
+          </form>
+
+          {sendError ? (
+            <p className="mt-3 text-sm text-[#FF3D57]" role="alert">
+              {sendError}
+            </p>
           ) : null}
         </div>
       </div>
