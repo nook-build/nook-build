@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  useCallback,
   useEffect,
   useMemo,
   useState,
@@ -8,6 +9,7 @@ import {
   type ReactNode,
 } from 'react'
 import {
+  formatInstantAsDate,
   formatIsoDateOnly,
   formatMoneyGBP,
   formatPercentDisplay,
@@ -27,20 +29,60 @@ export type ProjectDetail = {
   status: string | null
 }
 
-const TABS = [
-  'Overview',
-  'Documents',
-  'Photos',
-  'Messages',
-  'Valuation',
-  'Variations',
-  'Delays',
-  'Snags',
-  'Tasks',
-  'Invoices',
-] as const
+export type PortalSection =
+  | 'command-centre'
+  | 'documents'
+  | 'site-photos'
+  | 'messages'
+  | 'email-trail'
+  | 'building-control'
+  | 'invoices'
+  | 'valuation'
+  | 'cis'
+  | 'task-board'
+  | 'team-hub'
+  | 'snag-list'
+  | 'client-signoff'
+  | 'handover-pack'
+  | 'weekly-reports'
 
-type TabId = (typeof TABS)[number]
+function renderPortalSection(
+  section: PortalSection,
+  project: ProjectDetail,
+) {
+  switch (section) {
+    case 'command-centre':
+      return <OverviewPanel project={project} />
+    case 'documents':
+      return <DocumentsTab project={project} />
+    case 'valuation':
+      return <ValuationTab project={project} />
+    case 'site-photos':
+      return <PlaceholderPanel title="Site Photos" />
+    case 'messages':
+      return <PlaceholderPanel title="Messages" />
+    case 'email-trail':
+      return <PlaceholderPanel title="Email Trail" />
+    case 'building-control':
+      return <PlaceholderPanel title="Building Control" />
+    case 'invoices':
+      return <PlaceholderPanel title="Invoices" />
+    case 'cis':
+      return <PlaceholderPanel title="CIS" />
+    case 'task-board':
+      return <PlaceholderPanel title="Task Board" />
+    case 'team-hub':
+      return <PlaceholderPanel title="Team Hub" />
+    case 'snag-list':
+      return <PlaceholderPanel title="Snag List" />
+    case 'client-signoff':
+      return <PlaceholderPanel title="Client Sign-Off" />
+    case 'handover-pack':
+      return <PlaceholderPanel title="Handover Pack" />
+    case 'weekly-reports':
+      return <PlaceholderPanel title="Weekly Reports" />
+  }
+}
 
 function StatusPill({ status }: { status: string | null }) {
   const s = (status ?? '—').toLowerCase()
@@ -835,6 +877,441 @@ function projectCvHint(project: ProjectDetail, lineValueSum: number) {
   )
 }
 
+const DOCUMENT_FOLDERS = [
+  'Contracts',
+  'Drawings',
+  'Building Control',
+  'Invoices',
+  'Photos',
+  'Other',
+] as const
+
+type DocumentFolder = (typeof DOCUMENT_FOLDERS)[number]
+
+const DOCUMENTS_BUCKET = 'project-documents'
+
+type DocumentRow = {
+  id: string
+  project_id: string
+  folder: string
+  file_name: string
+  storage_path: string
+  content_type: string | null
+  file_size: number | string | null
+  created_at: string | null
+}
+
+function safeFileNameForStorage(name: string) {
+  const base = name.replace(/[^\w.\-]+/g, '_').replace(/_+/g, '_')
+  return base.slice(0, 180) || 'file'
+}
+
+function formatFileSize(n: number | string | null | undefined) {
+  if (n == null) return '—'
+  const bytes = typeof n === 'string' ? parseInt(n, 10) : n
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+function DocumentDownloadButton({
+  storagePath,
+  fileName,
+}: {
+  storagePath: string
+  fileName: string
+}) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  async function handleDownload() {
+    setErr('')
+    setBusy(true)
+    const { data, error } = await supabase.storage
+      .from(DOCUMENTS_BUCKET)
+      .createSignedUrl(storagePath, 3600)
+    setBusy(false)
+    if (error || !data?.signedUrl) {
+      setErr(error?.message ?? 'Could not create download link')
+      return
+    }
+    const a = document.createElement('a')
+    a.href = data.signedUrl
+    a.download = fileName
+    a.target = '_blank'
+    a.rel = 'noopener noreferrer'
+    a.click()
+  }
+  return (
+    <div className="text-right">
+      <button
+        type="button"
+        onClick={handleDownload}
+        disabled={busy}
+        className="text-sm font-medium transition hover:underline disabled:opacity-50"
+        style={{ color: accent }}
+      >
+        {busy ? 'Preparing…' : 'Download'}
+      </button>
+      {err ? (
+        <p className="mt-1 max-w-[200px] text-right text-xs text-red-400">
+          {err}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function DocumentsTab({ project }: { project: ProjectDetail }) {
+  const [docs, setDocs] = useState<DocumentRow[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadErr, setLoadErr] = useState('')
+  const [uploadFolder, setUploadFolder] = useState<DocumentFolder>('Contracts')
+  const [filterFolder, setFilterFolder] = useState<DocumentFolder | 'all'>('all')
+  const [uploading, setUploading] = useState(false)
+  const [uploadErr, setUploadErr] = useState('')
+  const [fileKey, setFileKey] = useState(0)
+
+  const loadDocs = useCallback(async () => {
+    setLoading(true)
+    setLoadErr('')
+    const { data, error } = await supabase
+      .from('documents')
+      .select('*')
+      .eq('project_id', project.id)
+      .order('created_at', { ascending: false })
+
+    if (error) {
+      setLoadErr(error.message)
+      setDocs([])
+    } else {
+      setDocs((data ?? []) as DocumentRow[])
+    }
+    setLoading(false)
+  }, [project.id])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      setLoading(true)
+      setLoadErr('')
+      const { data, error } = await supabase
+        .from('documents')
+        .select('*')
+        .eq('project_id', project.id)
+        .order('created_at', { ascending: false })
+      if (cancelled) return
+      if (error) {
+        setLoadErr(error.message)
+        setDocs([])
+      } else {
+        setDocs((data ?? []) as DocumentRow[])
+      }
+      setLoading(false)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
+
+  const counts = useMemo(() => {
+    const c: Record<string, number> = { all: docs.length }
+    for (const f of DOCUMENT_FOLDERS) c[f] = 0
+    for (const d of docs) {
+      if (c[d.folder] != null) c[d.folder] += 1
+    }
+    return c as Record<DocumentFolder | 'all', number>
+  }, [docs])
+
+  const filteredDocs = useMemo(() => {
+    if (filterFolder === 'all') return docs
+    return docs.filter((d) => d.folder === filterFolder)
+  }, [docs, filterFolder])
+
+  async function handleUpload(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault()
+    setUploadErr('')
+    const form = e.currentTarget
+    const input = form.elements.namedItem('file') as HTMLInputElement
+    const file = input?.files?.[0]
+    if (!file) {
+      setUploadErr('Choose a file to upload.')
+      return
+    }
+
+    const objectId = crypto.randomUUID()
+    const safe = safeFileNameForStorage(file.name)
+    const storagePath = `${project.id}/${uploadFolder}/${objectId}_${safe}`
+
+    setUploading(true)
+    const { error: upErr } = await supabase.storage
+      .from(DOCUMENTS_BUCKET)
+      .upload(storagePath, file, {
+        cacheControl: '3600',
+        upsert: false,
+        contentType: file.type || undefined,
+      })
+
+    if (upErr) {
+      setUploading(false)
+      setUploadErr(upErr.message)
+      return
+    }
+
+    const { error: rowErr } = await supabase.from('documents').insert({
+      project_id: project.id,
+      folder: uploadFolder,
+      file_name: file.name,
+      storage_path: storagePath,
+      content_type: file.type || null,
+      file_size: file.size,
+    })
+
+    setUploading(false)
+
+    if (rowErr) {
+      await supabase.storage.from(DOCUMENTS_BUCKET).remove([storagePath])
+      setUploadErr(rowErr.message)
+      return
+    }
+
+    input.value = ''
+    setFileKey((k) => k + 1)
+    await loadDocs()
+  }
+
+  return (
+    <div className="space-y-8">
+      <div
+        className="relative overflow-hidden rounded-xl border"
+        style={{ borderColor: border, backgroundColor: surface }}
+      >
+        <div
+          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
+          style={{
+            background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
+          }}
+          aria-hidden
+        />
+        <div className="p-5 sm:p-7">
+          <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
+            PROJECT LIBRARY
+          </p>
+          <h2 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC] sm:text-xl">
+            Documents
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-[#64748B]">
+            Organise uploads by folder. Files are stored securely; use Download
+            to open a time-limited link.
+          </p>
+
+          <div className="mt-6 flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => setFilterFolder('all')}
+              className={`rounded-lg border px-3.5 py-2 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F4A623]/55 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0F1219] ${
+                filterFolder === 'all'
+                  ? 'border-transparent text-black'
+                  : 'border-[#1E2535] bg-[#080A0F] text-[#94A3B8] hover:border-[#2d3a52] hover:text-[#E2E8F8]'
+              }`}
+              style={
+                filterFolder === 'all' ? { backgroundColor: accent } : undefined
+              }
+            >
+              All
+              <span className="ml-1.5 tabular-nums opacity-80">
+                ({counts.all})
+              </span>
+            </button>
+            {DOCUMENT_FOLDERS.map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => setFilterFolder(f)}
+                className={`rounded-lg border px-3.5 py-2 text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F4A623]/55 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0F1219] ${
+                  filterFolder === f
+                    ? 'border-transparent text-black'
+                    : 'border-[#1E2535] bg-[#080A0F] text-[#94A3B8] hover:border-[#2d3a52] hover:text-[#E2E8F8]'
+                }`}
+                style={
+                  filterFolder === f ? { backgroundColor: accent } : undefined
+                }
+              >
+                {f}
+                <span className="ml-1.5 tabular-nums opacity-80">
+                  ({counts[f]})
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div
+        className="rounded-xl border p-5 sm:p-7"
+        style={{ borderColor: border, backgroundColor: surface }}
+      >
+        <h3 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
+          Upload file
+        </h3>
+        <p className="mt-1 text-sm text-[#64748B]">
+          Choose a folder, then select a file. Maximum practical size depends on
+          your Supabase project limits.
+        </p>
+        <form className="mt-5 flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-end" onSubmit={handleUpload}>
+          <div className="min-w-[200px] flex-1 sm:max-w-xs">
+            <label
+              htmlFor="doc-folder"
+              className="mb-1.5 block text-[11px] font-semibold tracking-wider text-[#64748B]"
+            >
+              FOLDER
+            </label>
+            <select
+              id="doc-folder"
+              value={uploadFolder}
+              onChange={(e) =>
+                setUploadFolder(e.target.value as DocumentFolder)
+              }
+              className={inputClass}
+            >
+              {DOCUMENT_FOLDERS.map((f) => (
+                <option key={f} value={f}>
+                  {f}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="min-w-0 flex-1 sm:min-w-[240px]">
+            <label
+              htmlFor={`doc-file-${fileKey}`}
+              className="mb-1.5 block text-[11px] font-semibold tracking-wider text-[#64748B]"
+            >
+              FILE
+            </label>
+            <input
+              key={fileKey}
+              id={`doc-file-${fileKey}`}
+              name="file"
+              type="file"
+              className={`${inputClass} py-2 file:mr-3 file:rounded-md file:border-0 file:bg-[#1E2535] file:px-3 file:py-1.5 file:text-sm file:font-medium file:text-[#E2E8F8]`}
+            />
+          </div>
+          <button
+            type="submit"
+            disabled={uploading}
+            className="rounded-lg px-5 py-2.5 text-sm font-semibold text-black transition hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F4A623]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0F1219] disabled:opacity-50 sm:shrink-0"
+            style={{ backgroundColor: accent }}
+          >
+            {uploading ? 'Uploading…' : 'Upload'}
+          </button>
+          {uploadErr ? (
+            <p className="w-full text-sm text-red-400" role="alert">
+              {uploadErr}
+            </p>
+          ) : null}
+        </form>
+      </div>
+
+      <div
+        className="relative overflow-hidden rounded-xl border"
+        style={{ borderColor: border, backgroundColor: surface }}
+      >
+        <div
+          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
+          style={{
+            background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
+          }}
+          aria-hidden
+        />
+        <div className="p-5 sm:p-7">
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
+            Uploaded documents
+          </h3>
+
+          {loadErr ? (
+            <div
+              className="mt-4 rounded-lg border border-red-900/40 bg-red-950/25 px-4 py-3 text-sm text-red-200"
+              role="alert"
+            >
+              Could not load documents: {loadErr}
+            </div>
+          ) : null}
+
+          {loading ? (
+            <p className="mt-8 text-center text-sm text-[#64748B]">
+              Loading documents…
+            </p>
+          ) : !loadErr && filteredDocs.length === 0 ? (
+            <div
+              className="mt-6 rounded-lg border border-dashed px-6 py-14 text-center"
+              style={{ borderColor: border, backgroundColor: '#080A0F' }}
+            >
+              <p className="text-sm text-[#94A3B8]">
+                No documents in this view yet.
+              </p>
+              <p className="mt-2 text-sm text-[#64748B]">
+                Upload a file above or switch folder filter.
+              </p>
+            </div>
+          ) : !loadErr ? (
+            <div className="mt-6 overflow-x-auto rounded-lg border border-[#1E2535]">
+              <table className="w-full min-w-[720px] text-left text-sm">
+                <thead>
+                  <tr
+                    className="border-b text-[11px] font-semibold uppercase tracking-wider text-[#94A3B8]"
+                    style={{
+                      borderColor: border,
+                      background:
+                        'linear-gradient(180deg, #121722 0%, #0c0f16 100%)',
+                    }}
+                  >
+                    <th className="px-4 py-3.5 pl-5">Name</th>
+                    <th className="px-4 py-3.5">Folder</th>
+                    <th className="hidden px-4 py-3.5 sm:table-cell">
+                      Size
+                    </th>
+                    <th className="whitespace-nowrap px-4 py-3.5">Uploaded</th>
+                    <th className="px-4 py-3.5 pr-5 text-right"> </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#1E2535]">
+                  {filteredDocs.map((d) => (
+                    <tr
+                      key={d.id}
+                      className="transition-colors hover:bg-[#121722]/90"
+                    >
+                      <td className="max-w-[280px] px-4 py-3.5 pl-5">
+                        <span className="font-medium text-[#F1F5F9]">
+                          {d.file_name}
+                        </span>
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3.5 text-[#94A3B8]">
+                        {d.folder}
+                      </td>
+                      <td className="hidden whitespace-nowrap px-4 py-3.5 tabular-nums text-[#64748B] sm:table-cell">
+                        {formatFileSize(d.file_size)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3.5 text-[#94A3B8]">
+                        {formatInstantAsDate(d.created_at)}
+                      </td>
+                      <td className="whitespace-nowrap px-4 py-3.5 pr-5 text-right">
+                        <DocumentDownloadButton
+                          storagePath={d.storage_path}
+                          fileName={d.file_name}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function PlaceholderPanel({ title }: { title: string }) {
   return (
     <div
@@ -856,71 +1333,16 @@ function PlaceholderPanel({ title }: { title: string }) {
   )
 }
 
-export function ProjectTabs({ project }: { project: ProjectDetail }) {
-  const [active, setActive] = useState<TabId>('Overview')
-
+export function ProjectTabs({
+  project,
+  activeSection,
+}: {
+  project: ProjectDetail
+  activeSection: PortalSection
+}) {
   return (
-    <div>
-      <div className="mb-8">
-        <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
-          <h2 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
-            Workspace
-          </h2>
-          <p className="text-xs text-[#475569]">Jump to a section</p>
-        </div>
-        <div
-          className="rounded-xl border p-3 sm:p-4"
-          style={{ borderColor: border, backgroundColor: surface }}
-        >
-          <nav
-            className="flex flex-wrap gap-2 sm:gap-2.5"
-            role="tablist"
-            aria-label="Project sections"
-          >
-            {TABS.map((tab) => {
-              const isActive = active === tab
-              const panelId = `panel-${tab}`
-              return (
-                <button
-                  key={tab}
-                  id={`tab-${tab}`}
-                  type="button"
-                  role="tab"
-                  aria-selected={isActive}
-                  aria-controls={panelId}
-                  onClick={() => setActive(tab)}
-                  className={`min-h-[44px] shrink-0 rounded-lg border px-4 py-2.5 text-left text-sm font-medium transition focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F4A623]/55 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0F1219] ${
-                    isActive
-                      ? 'border-transparent text-black shadow-[0_4px_24px_-6px_rgba(244,166,35,0.55)]'
-                      : 'border-[#1E2535] bg-[#080A0F] text-[#94A3B8] hover:border-[#2d3a52] hover:bg-[#121722] hover:text-[#E2E8F8]'
-                  }`}
-                  style={
-                    isActive
-                      ? { backgroundColor: accent }
-                      : undefined
-                  }
-                >
-                  {tab}
-                </button>
-              )
-            })}
-          </nav>
-        </div>
-      </div>
-
-      <div
-        id={`panel-${active}`}
-        role="tabpanel"
-        aria-labelledby={`tab-${active}`}
-      >
-        {active === 'Overview' ? (
-          <OverviewPanel project={project} />
-        ) : active === 'Valuation' ? (
-          <ValuationTab project={project} />
-        ) : (
-          <PlaceholderPanel title={active} />
-        )}
-      </div>
+    <div role="main" aria-live="polite">
+      {renderPortalSection(activeSection, project)}
     </div>
   )
 }
