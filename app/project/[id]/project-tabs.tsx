@@ -4267,31 +4267,78 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     async function load() {
       setLoading(true)
       setLoadError('')
-      const { data, error } = await supabase
-        .from('valuations')
-        .select('*')
-        .eq('project_id', project.id)
-        .order('line_order', { ascending: true })
-
+      const [
+        valuationsRes,
+        certsRes,
+        delaysRes,
+        varsRes,
+      ] = await Promise.all([
+        supabase
+          .from('valuations')
+          .select('*')
+          .eq('project_id', project.id)
+          .order('line_order', { ascending: true }),
+        supabase
+          .from('certificates')
+          .select('*')
+          .eq('project_id', project.id)
+          .order('date_issued', { ascending: true }),
+        supabase
+          .from('delays')
+          .select('*')
+          .eq('project_id', project.id)
+          .order('date_logged', { ascending: true }),
+        supabase
+          .from('variations')
+          .select('*')
+          .eq('project_id', project.id)
+          .order('created_at', { ascending: true }),
+      ])
       if (cancelled) return
-      if (error) {
-        setLoadError(error.message)
-        setRows([])
-      } else {
-        setRows(normalizeValuationRows(data as Record<string, unknown>[]))
+      const errors = [
+        valuationsRes.error?.message,
+        certsRes.error?.message,
+        delaysRes.error?.message,
+        varsRes.error?.message,
+      ].filter(Boolean)
+      if (errors.length > 0) {
+        setLoadError(errors.join(' · '))
       }
-      const { data: cData, error: cErr } = await supabase
-        .from('certificates')
-        .select('*')
-        .eq('project_id', project.id)
-        .order('date_issued', { ascending: true })
-      if (cancelled) return
-      if (cErr) {
-        setLoadError(cErr.message)
-        setCertificates([])
-      } else {
-        setCertificates((cData ?? []) as CertificateRecord[])
-      }
+      setRows(
+        normalizeValuationRows(
+          (valuationsRes.data ?? []) as Record<string, unknown>[],
+        ),
+      )
+      setCertificates((certsRes.data ?? []) as CertificateRecord[])
+      setDelayLogs(
+        ((delaysRes.data ?? []) as Record<string, unknown>[]).map((d) => ({
+          id: String(d.id ?? crypto.randomUUID()),
+          startWeek: Number(d.start_week ?? 1),
+          days: Number(d.days_lost ?? 0),
+          reason: String(d.reason ?? 'Other'),
+          notes: String(d.notes ?? ''),
+          dateLogged: String(d.date_logged ?? ''),
+        })),
+      )
+      setVariationRows(
+        ((varsRes.data ?? []) as Record<string, unknown>[]).map((v, idx) => ({
+          id: String(v.id ?? crypto.randomUUID()),
+          voNumber:
+            String(v.vo_number ?? '').trim() || `VO-${String(idx + 1).padStart(3, '0')}`,
+          description: String(v.description ?? ''),
+          trade: String(v.trade ?? '—'),
+          value: Number(v.value ?? 0),
+          programmeDays: Number(v.programme_days ?? 0),
+          status:
+            String(v.status ?? 'pending') === 'approved'
+              ? 'approved'
+              : String(v.status ?? 'pending') === 'rejected'
+                ? 'rejected'
+                : 'pending',
+          dateRaised: String(v.date_raised ?? ''),
+          approvalDate: String(v.client_approval_date ?? ''),
+        })),
+      )
       setLoading(false)
     }
     load()
@@ -4377,9 +4424,16 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     return 0
   }, [latestRows, project.contract_value])
 
-  const variationsTotal = num(project.variations_total)
+  const variationTotal = useMemo(
+    () =>
+      variationRows.reduce(
+        (s, v) => (v.status === 'rejected' ? s : s + v.value),
+        0,
+      ),
+    [variationRows],
+  )
   const revisedContract =
-    contractSum > 0 ? contractSum + variationsTotal : null
+    contractSum > 0 ? contractSum + variationTotal : null
 
   const totalDrawn = useMemo(
     () =>
@@ -4419,7 +4473,6 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   )
 
   const originalContract = project.contract_value
-  const delaysDaysRaw = project.total_delays_days
   const lockedItems = project.locked_items_count ?? 0
 
   const currentWeekDisplay = latestPeriod ?? '—'
@@ -4467,14 +4520,6 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const revisedHandoverIso =
     revisedHandoverMs != null ? new Date(revisedHandoverMs).toISOString().slice(0, 10) : null
 
-  const variationTotal = useMemo(
-    () =>
-      variationRows.reduce(
-        (s, v) => (v.status === 'rejected' ? s : s + v.value),
-        0,
-      ),
-    [variationRows],
-  )
   const revisedContractWithVars =
     (project.contract_value != null ? num(project.contract_value) : 0) + variationTotal
 
@@ -4498,27 +4543,56 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     return fmtPortalDate(iso).toUpperCase()
   }
 
-  function addDelayLog(e: FormEvent) {
+  async function addDelayLog(e: FormEvent) {
     e.preventDefault()
     const raw = Math.max(1, parseInt(delayDaysInput || '1', 10))
     const days = delayUnit === 'weeks' ? raw * 7 : raw
     const startW = Math.max(1, parseInt(delayStartWeekInput || '1', 10))
-    setDelayLogs((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        startWeek: startW,
-        days,
-        reason: delayReasonInput,
-        notes: delayNotesInput.trim(),
-        dateLogged: new Date().toISOString().slice(0, 10),
-      },
-    ])
+    const payload = {
+      project_id: project.id,
+      start_week: startW,
+      days_lost: days,
+      reason: delayReasonInput,
+      notes: delayNotesInput.trim(),
+      date_logged: new Date().toISOString().slice(0, 10),
+    }
+    const { data, error } = await supabase
+      .from('delays')
+      .insert(payload)
+      .select('*')
+      .maybeSingle()
+    if (error) {
+      setLoadError(error.message)
+      return
+    }
+    const inserted = data as Record<string, unknown> | null
+    if (inserted) {
+      setDelayLogs((prev) => [
+        ...prev,
+        {
+          id: String(inserted.id ?? crypto.randomUUID()),
+          startWeek: Number(inserted.start_week ?? startW),
+          days: Number(inserted.days_lost ?? days),
+          reason: String(inserted.reason ?? delayReasonInput),
+          notes: String(inserted.notes ?? delayNotesInput.trim()),
+          dateLogged: String(inserted.date_logged ?? payload.date_logged),
+        },
+      ])
+    }
     setDelayDaysInput('1')
     setDelayUnit('days')
     setDelayStartWeekInput(String(currentWeekNumber ?? 1))
     setDelayReasonInput('Client delay')
     setDelayNotesInput('')
+  }
+
+  async function removeDelayLog(id: string) {
+    const { error } = await supabase.from('delays').delete().eq('id', id)
+    if (error) {
+      setLoadError(error.message)
+      return
+    }
+    setDelayLogs((prev) => prev.filter((d) => d.id !== id))
   }
 
   function addSiteNote() {
@@ -4537,26 +4611,55 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   }
 
 
-  function addVariation(e: FormEvent) {
+  async function addVariation(e: FormEvent) {
     e.preventDefault()
     if (!varDesc.trim()) return
     const value = Math.max(0, parseFloat(varValue || '0'))
     const days = Math.max(0, parseInt(varDays || '0', 10))
     const idx = variationRows.length + 1
-    setVariationRows((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        voNumber: `VO-${String(idx).padStart(3, '0')}`,
-        description: varDesc.trim(),
-        trade: varTrade.trim() || '—',
-        value,
-        programmeDays: days,
-        status: varStatus,
-        dateRaised: varDate || new Date().toISOString().slice(0, 10),
-        approvalDate: varApprovalDate,
-      },
-    ])
+    const voNumber = `VO-${String(idx).padStart(3, '0')}`
+    const payload = {
+      project_id: project.id,
+      vo_number: voNumber,
+      description: varDesc.trim(),
+      trade: varTrade.trim() || '—',
+      value,
+      programme_days: days,
+      status: varStatus,
+      date_raised: varDate || new Date().toISOString().slice(0, 10),
+      client_approval_date: varApprovalDate || null,
+    }
+    const { data, error } = await supabase
+      .from('variations')
+      .insert(payload)
+      .select('*')
+      .maybeSingle()
+    if (error) {
+      setLoadError(error.message)
+      return
+    }
+    const inserted = data as Record<string, unknown> | null
+    if (inserted) {
+      setVariationRows((prev) => [
+        ...prev,
+        {
+          id: String(inserted.id ?? crypto.randomUUID()),
+          voNumber: String(inserted.vo_number ?? voNumber),
+          description: String(inserted.description ?? payload.description),
+          trade: String(inserted.trade ?? payload.trade),
+          value: Number(inserted.value ?? value),
+          programmeDays: Number(inserted.programme_days ?? days),
+          status:
+            String(inserted.status ?? varStatus) === 'approved'
+              ? 'approved'
+              : String(inserted.status ?? varStatus) === 'rejected'
+                ? 'rejected'
+                : 'pending',
+          dateRaised: String(inserted.date_raised ?? payload.date_raised),
+          approvalDate: String(inserted.client_approval_date ?? varApprovalDate),
+        },
+      ])
+    }
     setVarDesc('')
     setVarTrade('')
     setVarValue('')
@@ -4566,7 +4669,12 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     setVarApprovalDate('')
   }
 
-  function removeVariation(id: string) {
+  async function removeVariation(id: string) {
+    const { error } = await supabase.from('variations').delete().eq('id', id)
+    if (error) {
+      setLoadError(error.message)
+      return
+    }
     setVariationRows((prev) => prev.filter((v) => v.id !== id))
   }
 
@@ -4582,21 +4690,18 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         const bm = utcMillisFromIsoDate(b.date_issued) ?? 0
         return am - bm
       })
+    const certByWeekNumber = new Map<number, number>()
+    paidCerts.forEach((c, i) => {
+      const wk = i + 1
+      certByWeekNumber.set(wk, (certByWeekNumber.get(wk) ?? 0) + num(c.amount))
+    })
     return labels.map((wl, idx) => {
       const weekNum = idx + 1
       const weekPlanned = rows
         .filter((r) => r.week_label === wl)
         .reduce((s, r) => s + num(r.amount_due), 0)
       plannedCumul += weekPlanned
-      const weekStartMs =
-        (utcMillisFromIsoDate(project.start_date) ?? 0) + idx * 7 * 86400000
-      const weekEndMs = weekStartMs + 6 * 86400000
-      const weekActual = paidCerts
-        .filter((c) => {
-          const ms = utcMillisFromIsoDate(c.date_issued)
-          return ms != null && ms >= weekStartMs && ms <= weekEndMs
-        })
-        .reduce((s, c) => s + num(c.amount), 0)
+      const weekActual = certByWeekNumber.get(weekNum) ?? 0
       actualCumul += weekActual
       const actualPct = contract > 0 ? (actualCumul / contract) * 100 : 0
       const plannedPct = contract > 0 ? (plannedCumul / contract) * 100 : 0
@@ -4730,7 +4835,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           <div className="sv" style={{ color: 'var(--rd)' }}>
             {loading ? '…' : handoverStat}
           </div>
-          <div className="ss">{formatIsoDateOnly(project.handover_date)}</div>
+          <div className="ss">{formatIsoDateOnly(revisedHandoverIso ?? project.handover_date)}</div>
         </div>
       </div>
 
@@ -4812,7 +4917,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
 
       <div className="dates-row">
         <div><div className="d-l">Start</div><div className="d-v ac">{formatIsoDateOnly(project.start_date).toUpperCase()}</div></div>
-        <div><div className="d-l">Handover</div><div className="d-v gr">{formatIsoDateOnly(project.handover_date).toUpperCase()}</div></div>
+        <div><div className="d-l">Handover</div><div className="d-v gr">{formatIsoDateOnly(revisedHandoverIso ?? project.handover_date).toUpperCase()}</div></div>
         <div><div className="d-l">Duration</div><div className="d-v bl">{durationWeeks != null ? `${durationWeeks} WEEKS` : '—'}</div></div>
         <div><div className="d-l">Deposit Paid</div><div className="d-v tl">{depositAmount > 0 ? formatMoneyGBP(depositAmount) : '—'}</div></div>
       </div>
@@ -4834,9 +4939,9 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         <div className="panel-lite">
           <div className="pl-head">LIVE PROJECT SUMMARY</div>
           <div className="summary-row"><span>Original contract</span><strong>{originalContract != null ? formatMoneyGBP(num(originalContract)) : '—'}</strong></div>
-          <div className="summary-row"><span>Variations total</span><strong>{formatSignedMoneyGBP(variationsTotal)}</strong></div>
+          <div className="summary-row"><span>Variations total</span><strong>{formatSignedMoneyGBP(variationTotal)}</strong></div>
           <div className="summary-row"><span>Revised contract value</span><strong>{revisedContract != null ? formatMoneyGBP(revisedContract) : '—'}</strong></div>
-          <div className="summary-row no-b"><span>Total delays</span><strong>{delaysDaysRaw == null ? '—' : `${delaysDaysRaw} day${delaysDaysRaw === 1 ? '' : 's'}`}</strong></div>
+          <div className="summary-row no-b"><span>Total delays</span><strong>{`${totalDelayDays} day${totalDelayDays === 1 ? '' : 's'}`}</strong></div>
         </div>
       </div>
 
@@ -5071,14 +5176,15 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
             <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 10, overflow: 'hidden' }}>
               <div style={{ padding: '10px 12px', borderBottom: `1px solid ${border}`, fontFamily: 'Bebas Neue, sans-serif', letterSpacing: 2 }}>DELAY LOG</div>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead><tr><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>DATE</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>REASON</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>DAYS</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>IMPACT</th></tr></thead>
+                <thead><tr><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>DATE</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>REASON</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>DAYS</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>IMPACT</th><th style={{ padding: '8px 10px' }} /></tr></thead>
                 <tbody>
-                  {delayLogs.length === 0 ? <tr><td colSpan={4} style={{ padding: '10px', color: '#64748B', fontFamily: 'DM Mono, monospace', fontSize: 10 }}>No delays logged yet.</td></tr> : delayLogs.map((d) => (
+                  {delayLogs.length === 0 ? <tr><td colSpan={5} style={{ padding: '10px', color: '#64748B', fontFamily: 'DM Mono, monospace', fontSize: 10 }}>No delays logged yet.</td></tr> : delayLogs.map((d) => (
                     <tr key={d.id}>
                       <td style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 10 }}>{fmtPortalDate(d.dateLogged)}</td>
                       <td style={{ padding: '8px 10px', fontSize: 11 }}>{d.reason}</td>
                       <td style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#FF3D57' }}>{d.days}</td>
                       <td style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 10, color: '#64748B' }}>Wk {d.startWeek}</td>
+                      <td style={{ padding: '8px 10px' }}><button type="button" onClick={() => void removeDelayLog(d.id)} style={{ border: '1px solid rgba(255,61,87,.3)', background: 'transparent', color: '#FF3D57', borderRadius: 4, fontSize: 10, padding: '2px 6px' }}>✕</button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -5144,7 +5250,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
                         <td style={{ padding: '7px 10px' }}>
                           <span style={{ display: 'inline-flex', padding: '2px 7px', borderRadius: 4, fontSize: 9, fontFamily: 'DM Mono, monospace', background: v.status === 'approved' ? 'rgba(0,230,118,.1)' : v.status === 'rejected' ? 'rgba(255,61,87,.1)' : 'rgba(244,166,35,.1)', border: v.status === 'approved' ? '1px solid rgba(0,230,118,.2)' : v.status === 'rejected' ? '1px solid rgba(255,61,87,.2)' : '1px solid rgba(244,166,35,.2)', color: v.status === 'approved' ? '#00E676' : v.status === 'rejected' ? '#FF3D57' : '#F4A623' }}>{v.status}</span>
                         </td>
-                        <td style={{ padding: '7px 10px' }}><button type="button" onClick={() => removeVariation(v.id)} style={{ border: '1px solid rgba(255,61,87,.3)', background: 'transparent', color: '#FF3D57', borderRadius: 4, fontSize: 10, padding: '2px 6px' }}>✕</button></td>
+                        <td style={{ padding: '7px 10px' }}><button type="button" onClick={() => void removeVariation(v.id)} style={{ border: '1px solid rgba(255,61,87,.3)', background: 'transparent', color: '#FF3D57', borderRadius: 4, fontSize: 10, padding: '2px 6px' }}>✕</button></td>
                       </tr>
                     ))}
                   </tbody>
