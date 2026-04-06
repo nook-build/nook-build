@@ -18,8 +18,6 @@ import {
 import { supabase } from '@/lib/supabase'
 
 const accent = '#F4A623'
-const success = '#00E676'
-const infoBlue = '#3B8BFF'
 const border = '#1E2535'
 const surface = '#0F1219'
 
@@ -174,12 +172,7 @@ type VariationEntry = {
   programmeDays: number
   status: 'pending' | 'approved' | 'rejected'
   dateRaised: string
-}
-
-type SiteDiaryOverride = {
-  actualPct: number
-  note: string
-  rag: 'red' | 'amber' | 'green'
+  approvalDate: string
 }
 
 type BCInspection = {
@@ -190,6 +183,13 @@ type BCInspection = {
   result: 'pass' | 'fail' | 'advisory' | null
   notes: string
   status: 'complete' | 'pending'
+}
+
+type SiteNoteEntry = {
+  id: string
+  week: number
+  note: string
+  status: 'on-track' | 'slightly-behind' | 'delayed' | 'paused' | 'ahead'
 }
 
 const PROGRAMME_SEED: ProgrammeSeed[] = [
@@ -4146,48 +4146,6 @@ function formatSignedMoneyGBP(n: number): string {
   return n < 0 ? `−${abs}` : `+${abs}`
 }
 
-function CommandCentreStatCard({
-  label,
-  value,
-  hint,
-  valueColor,
-}: {
-  label: string
-  value: string
-  hint?: string
-  valueColor: string
-}) {
-  return (
-    <div
-      className="relative overflow-hidden rounded-xl border px-5 py-5"
-      style={{
-        borderColor: border,
-        backgroundColor: '#080A0F',
-      }}
-    >
-      <div
-        className="absolute left-0 top-0 h-full w-1 rounded-r-full opacity-95"
-        style={{
-          background: valueColor,
-        }}
-        aria-hidden
-      />
-      <p className="pl-2 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-        {label}
-      </p>
-      <p
-        className="mt-2 pl-2 text-3xl font-bold tabular-nums tracking-tight"
-        style={{ color: valueColor }}
-      >
-        {value}
-      </p>
-      {hint ? (
-        <p className="mt-2 pl-2 text-xs text-[#475569]">{hint}</p>
-      ) : null}
-    </div>
-  )
-}
-
 function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const [activeTab, setActiveTab] = useState<
     | 'overview'
@@ -4222,9 +4180,15 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   })
   const [delayLogs, setDelayLogs] = useState<DelayLogEntry[]>([])
   const [delayDaysInput, setDelayDaysInput] = useState('1')
+  const [delayUnit, setDelayUnit] = useState<'days' | 'weeks'>('days')
   const [delayStartWeekInput, setDelayStartWeekInput] = useState('3')
   const [delayReasonInput, setDelayReasonInput] = useState('Client delay')
   const [delayNotesInput, setDelayNotesInput] = useState('')
+  const [siteNotes, setSiteNotes] = useState<SiteNoteEntry[]>([])
+  const [siteNoteWeek, setSiteNoteWeek] = useState('1')
+  const [siteNoteText, setSiteNoteText] = useState('')
+  const [siteNoteStatus, setSiteNoteStatus] =
+    useState<SiteNoteEntry['status']>('on-track')
 
   const [variationRows, setVariationRows] = useState<VariationEntry[]>([])
   const [varDesc, setVarDesc] = useState('')
@@ -4235,7 +4199,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     'pending',
   )
   const [varDate, setVarDate] = useState('')
-  const [siteDiary, setSiteDiary] = useState<Record<string, SiteDiaryOverride>>({})
+  const [varApprovalDate, setVarApprovalDate] = useState('')
   const [bcInspections, setBcInspections] = useState<BCInspection[]>([
     {
       id: crypto.randomUUID(),
@@ -4514,7 +4478,9 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const revisedContractWithVars =
     (project.contract_value != null ? num(project.contract_value) : 0) + variationTotal
 
-  const delayPreviewDays = Math.max(1, parseInt(delayDaysInput || '1', 10))
+  const delayPreviewBase = Math.max(1, parseInt(delayDaysInput || '1', 10))
+  const delayPreviewDays =
+    delayUnit === 'weeks' ? delayPreviewBase * 7 : delayPreviewBase
 
   function fmtPortalDate(iso: string | null | undefined) {
     if (!iso) return '—'
@@ -4534,7 +4500,8 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
 
   function addDelayLog(e: FormEvent) {
     e.preventDefault()
-    const days = Math.max(1, parseInt(delayDaysInput || '1', 10))
+    const raw = Math.max(1, parseInt(delayDaysInput || '1', 10))
+    const days = delayUnit === 'weeks' ? raw * 7 : raw
     const startW = Math.max(1, parseInt(delayStartWeekInput || '1', 10))
     setDelayLogs((prev) => [
       ...prev,
@@ -4548,18 +4515,27 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       },
     ])
     setDelayDaysInput('1')
+    setDelayUnit('days')
     setDelayStartWeekInput(String(currentWeekNumber ?? 1))
     setDelayReasonInput('Client delay')
     setDelayNotesInput('')
   }
 
-  function removeDelayLog(id: string) {
-    setDelayLogs((prev) => prev.filter((d) => d.id !== id))
+  function addSiteNote() {
+    if (!siteNoteText.trim()) return
+    setSiteNotes((prev) => [
+      ...prev,
+      {
+        id: crypto.randomUUID(),
+        week: Math.max(1, parseInt(siteNoteWeek || '1', 10)),
+        note: siteNoteText.trim(),
+        status: siteNoteStatus,
+      },
+    ])
+    setSiteNoteText('')
+    setSiteNoteStatus('on-track')
   }
 
-  function resetDelays() {
-    setDelayLogs([])
-  }
 
   function addVariation(e: FormEvent) {
     e.preventDefault()
@@ -4578,6 +4554,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         programmeDays: days,
         status: varStatus,
         dateRaised: varDate || new Date().toISOString().slice(0, 10),
+        approvalDate: varApprovalDate,
       },
     ])
     setVarDesc('')
@@ -4586,60 +4563,77 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     setVarDays('0')
     setVarStatus('pending')
     setVarDate('')
+    setVarApprovalDate('')
   }
 
   function removeVariation(id: string) {
     setVariationRows((prev) => prev.filter((v) => v.id !== id))
   }
 
-  const trackerTradeRows = useMemo(() => {
-    const byTrade = new Map<
-      string,
-      { trade: string; plannedPct: number; thisWeekPct: number }
-    >()
-    for (const r of latestRows) {
-      const trade = (r.description ?? '').trim()
-      if (!trade) continue
-      const plannedPct = num(r.cumulative_percent)
-      const thisWeekPct = num(r.percent_complete)
-      if (!byTrade.has(trade)) {
-        byTrade.set(trade, { trade, plannedPct, thisWeekPct })
+  const weeklyPlanRows = useMemo(() => {
+    const labels = chronologicalWeekLabels
+    const contract = revisedContract ?? contractSum
+    let plannedCumul = 0
+    let actualCumul = 0
+    const paidCerts = certificates
+      .filter((c) => (c.status ?? '').toLowerCase() === 'paid' || c.date_paid)
+      .sort((a, b) => {
+        const am = utcMillisFromIsoDate(a.date_issued) ?? 0
+        const bm = utcMillisFromIsoDate(b.date_issued) ?? 0
+        return am - bm
+      })
+    return labels.map((wl, idx) => {
+      const weekNum = idx + 1
+      const weekPlanned = rows
+        .filter((r) => r.week_label === wl)
+        .reduce((s, r) => s + num(r.amount_due), 0)
+      plannedCumul += weekPlanned
+      const weekStartMs =
+        (utcMillisFromIsoDate(project.start_date) ?? 0) + idx * 7 * 86400000
+      const weekEndMs = weekStartMs + 6 * 86400000
+      const weekActual = paidCerts
+        .filter((c) => {
+          const ms = utcMillisFromIsoDate(c.date_issued)
+          return ms != null && ms >= weekStartMs && ms <= weekEndMs
+        })
+        .reduce((s, c) => s + num(c.amount), 0)
+      actualCumul += weekActual
+      const actualPct = contract > 0 ? (actualCumul / contract) * 100 : 0
+      const plannedPct = contract > 0 ? (plannedCumul / contract) * 100 : 0
+      const variance = actualCumul - plannedCumul
+      const current = currentWeekNumber === weekNum
+      const status =
+        weekActual > 0
+          ? 'claimed'
+          : current
+            ? 'current'
+            : weekNum > (currentWeekNumber ?? 0)
+              ? 'pending'
+              : 'pending'
+      return {
+        wl,
+        weekNum,
+        range: formatPortalWeekRangeFromStart(project.start_date, weekNum),
+        weekPlanned,
+        weekActual,
+        plannedCumul,
+        actualCumul,
+        plannedPct,
+        actualPct,
+        variance,
+        current,
+        status,
       }
-    }
-    return Array.from(byTrade.values()).slice(0, 14)
-  }, [latestRows])
-
-  const onTrackRows = useMemo(() => {
-    return trackerTradeRows.map((row) => {
-      const override = siteDiary[row.trade]
-      const actualPct = override ? override.actualPct : row.plannedPct
-      const rag = override
-        ? override.rag
-        : actualPct >= row.plannedPct
-          ? 'green'
-          : actualPct >= Math.max(0, row.plannedPct - 5)
-            ? 'amber'
-            : 'red'
-      const note = override?.note ?? '—'
-      const score =
-        row.plannedPct <= 0 ? 100 : Math.max(0, Math.min(100, (actualPct / row.plannedPct) * 100))
-      return { ...row, actualPct, rag, note, score }
     })
-  }, [trackerTradeRows, siteDiary])
-
-  const overallOnTrackPct =
-    onTrackRows.length > 0
-      ? onTrackRows.reduce((s, r) => s + r.score, 0) / onTrackRows.length
-      : 0
-
-  const ragCounts = useMemo(
-    () => ({
-      green: onTrackRows.filter((r) => r.rag === 'green').length,
-      amber: onTrackRows.filter((r) => r.rag === 'amber').length,
-      red: onTrackRows.filter((r) => r.rag === 'red').length,
-    }),
-    [onTrackRows],
-  )
+  }, [
+    certificates,
+    chronologicalWeekLabels,
+    contractSum,
+    currentWeekNumber,
+    project.start_date,
+    revisedContract,
+    rows,
+  ])
 
   const bcComplete = bcInspections.filter((i) => i.status === 'complete').length
   const bcPending = bcInspections.filter((i) => i.status === 'pending').length
@@ -4898,16 +4892,61 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
 
 
   function CommandCentreCumulativeTab() {
-    const cumulativeCert = rows.reduce((s, r) => s + num(r.cumulative_total), 0)
-    const cumulativeDrawn = rows.reduce((s, r) => s + num(r.amount_due), 0)
     return (
-      <div className="rounded-xl border p-5 sm:p-7" style={{ borderColor: border, backgroundColor: surface }}>
-        <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">CUMULATIVE</p>
-        <h3 className="mt-1 text-lg font-semibold text-[#F8FAFC]">Cumulative drawdown</h3>
-        <div className="mt-5 grid gap-4 sm:grid-cols-3">
-          <CommandCentreStatCard label="Certificates Total" value={formatMoneyGBP(cumulativeCert)} valueColor={accent} />
-          <CommandCentreStatCard label="Drawn Total" value={formatMoneyGBP(cumulativeDrawn)} valueColor={success} />
-          <CommandCentreStatCard label="Live Rows" value={String(rows.length)} valueColor={infoBlue} />
+      <div style={{ border: `1px solid ${border}`, borderRadius: 14, background: '#0F1219', overflow: 'hidden' }}>
+        <div style={{ padding: '14px 18px', borderBottom: `1px solid ${border}` }}>
+          <div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 16, letterSpacing: 2, color: '#E2E8F8' }}>CUMULATIVE</div>
+          <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 10, color: '#64748B' }}>Weekly cumulative drawdown tracker</div>
+        </div>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+            <thead>
+              <tr>
+                {['WEEK', 'DATES', 'WEEK CERT', 'CUMULATIVE', '% CONTRACT', 'PROGRESS', 'STATUS'].map((h) => (
+                  <th key={h} style={{ background: '#161B26', color: '#64748B', fontFamily: 'DM Mono, monospace', fontSize: 9, letterSpacing: 1, textTransform: 'uppercase', padding: '8px 10px', textAlign: 'left', borderBottom: `1px solid ${border}`, whiteSpace: 'nowrap' }}>
+                    {h}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {weeklyPlanRows.map((r) => (
+                <tr key={r.weekNum} style={r.current ? { background: 'rgba(244,166,35,.04)' } : undefined}>
+                  <td style={{ padding: '6px 10px', fontFamily: 'Bebas Neue, sans-serif', fontSize: 14, letterSpacing: 1, color: r.current ? '#F4A623' : '#E2E8F8' }}>
+                    WK{r.weekNum}
+                  </td>
+                  <td style={{ padding: '6px 10px', fontFamily: 'DM Mono, monospace', fontSize: 10, color: '#64748B' }}>{r.range}</td>
+                  <td style={{ padding: '6px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: r.weekActual > 0 ? '#F4A623' : '#64748B' }}>
+                    {r.weekActual > 0 ? formatMoneyGBP(r.weekActual) : '—'}
+                  </td>
+                  <td style={{ padding: '6px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#00E676' }}>{formatMoneyGBP(r.actualCumul)}</td>
+                  <td style={{ padding: '6px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#E2E8F8' }}>{`${r.actualPct.toFixed(1)}%`}</td>
+                  <td style={{ padding: '6px 10px', minWidth: 200 }}>
+                    <div style={{ position: 'relative', height: 9, borderRadius: 999, background: '#1A2030', border: `1px solid ${border}`, overflow: 'hidden' }}>
+                      <div style={{ position: 'absolute', inset: '0 auto 0 0', width: `${Math.min(100, r.plannedPct)}%`, background: 'rgba(59,139,255,.6)' }} />
+                      <div style={{ position: 'absolute', inset: '0 auto 0 0', width: `${Math.min(100, r.actualPct)}%`, background: 'rgba(244,166,35,.7)' }} />
+                    </div>
+                  </td>
+                  <td style={{ padding: '6px 10px' }}>
+                    {r.status === 'claimed' ? (
+                      <span style={{ display: 'inline-flex', padding: '2px 7px', borderRadius: 4, fontSize: 9, fontFamily: 'DM Mono, monospace', background: 'rgba(0,230,118,.1)', border: '1px solid rgba(0,230,118,.2)', color: '#00E676' }}>✓ Claimed</span>
+                    ) : r.status === 'current' ? (
+                      <span style={{ display: 'inline-flex', padding: '2px 7px', borderRadius: 4, fontSize: 9, fontFamily: 'DM Mono, monospace', background: 'rgba(244,166,35,.1)', border: '1px solid rgba(244,166,35,.2)', color: '#F4A623' }}>▶ Current</span>
+                    ) : (
+                      <span style={{ display: 'inline-flex', padding: '2px 7px', borderRadius: 4, fontSize: 9, fontFamily: 'DM Mono, monospace', background: 'rgba(74,85,104,.2)', border: '1px solid rgba(74,85,104,.35)', color: '#94A3B8' }}>✗ Pending</span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={3} style={{ padding: '9px 10px', borderTop: `1px solid ${border}`, fontFamily: 'Bebas Neue, sans-serif', fontSize: 14, letterSpacing: 1, color: '#F4A623' }}>TOTAL DRAWN</td>
+                <td style={{ padding: '9px 10px', borderTop: `1px solid ${border}`, fontFamily: 'Bebas Neue, sans-serif', fontSize: 14, color: '#00E676' }}>{formatMoneyGBP(totalDrawn)}</td>
+                <td colSpan={3} style={{ borderTop: `1px solid ${border}` }} />
+              </tr>
+            </tfoot>
+          </table>
         </div>
       </div>
     )
@@ -4929,187 +4968,121 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       break
     case 'delays':
       content = (
-        <div className="space-y-4">
-          <div className="panel">
-            <div className="ph">
-              <div>
-                <div className="pt">PROGRAMME DELAY CONTROL</div>
-                <div className="ps">
-                  Push the entire programme forward when project is paused
-                </div>
+        <div style={{ display: 'grid', gridTemplateColumns: '7fr 3fr', gap: 14 }}>
+          <div>
+            <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, overflow: 'hidden', marginBottom: 14 }}>
+              <div style={{ padding: '12px 18px', borderBottom: `1px solid ${border}`, background: 'rgba(244,166,35,.03)' }}>
+                <div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 16, letterSpacing: 2 }}>PROGRAMME DELAY CONTROL</div>
               </div>
-            </div>
-            <div className="delay-grid">
-              <div>
-                <div className="delay-stats-grid">
-                  <div>
-                    <div className="mini-lbl">Original Handover</div>
-                    <div className="mini-val muted">
-                      {fmtPortalDateUpper(project.handover_date)}
+              <div style={{ padding: 16 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 12, marginBottom: 14 }}>
+                  {[
+                    ['ORIGINAL HANDOVER', fmtPortalDateUpper(project.handover_date), '#64748B'],
+                    ['REVISED HANDOVER', fmtPortalDateUpper(revisedHandoverIso ?? project.handover_date), '#F4A623'],
+                    ['TOTAL DELAY WEEKS', String(totalDelayWeeks), '#FF3D57'],
+                    ['PROGRAMME LENGTH', durationWeeks != null ? `${durationWeeks + Math.ceil(totalDelayDays / 7)} WKS` : '—', '#3B8BFF'],
+                  ].map(([l, v, c]) => (
+                    <div key={l}>
+                      <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, letterSpacing: 1, textTransform: 'uppercase', color: '#64748B', marginBottom: 4 }}>{l}</div>
+                      <div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 21, color: c }}>{v}</div>
                     </div>
-                  </div>
-                  <div>
-                    <div className="mini-lbl">Revised Handover</div>
-                    <div className="mini-val ac">
-                      {fmtPortalDateUpper(revisedHandoverIso ?? project.handover_date)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="mini-lbl">Total Delay Weeks</div>
-                    <div className="mini-val rd">{totalDelayWeeks}</div>
-                  </div>
-                  <div>
-                    <div className="mini-lbl">Programme Length</div>
-                    <div className="mini-val bl">
-                      {durationWeeks != null
-                        ? `${durationWeeks + Math.ceil(totalDelayDays / 7)} wks`
-                        : '—'}
-                    </div>
-                  </div>
+                  ))}
                 </div>
-                <form className="delay-form-shell" onSubmit={addDelayLog}>
-                  <div className="mini-lbl" style={{ marginBottom: 10 }}>
-                    Log New Delay
-                  </div>
-                  <div className="delay-form-row3">
+                <form onSubmit={addDelayLog} style={{ background: '#161B26', border: `1px solid ${border}`, borderRadius: 10, padding: '14px 16px', marginBottom: 12 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
                     <div>
-                      <label className="delay-lbl">DURATION</label>
-                      <input
-                        className="delay-input mono"
-                        type="number"
-                        min={1}
-                        max={365}
-                        value={delayDaysInput}
-                        onChange={(e) => setDelayDaysInput(e.target.value)}
-                      />
+                      <label style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', display: 'block', marginBottom: 4 }}>DURATION</label>
+                      <input type="number" min={1} max={365} value={delayDaysInput} onChange={(e) => setDelayDaysInput(e.target.value)} style={{ width: '100%', background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace', fontSize: 13 }} />
                     </div>
                     <div>
-                      <label className="delay-lbl">UNIT</label>
-                      <div className="unit-row">
-                        <button type="button" className="unit-btn unit-on">
-                          Days
-                        </button>
-                        <button type="button" className="unit-btn">
-                          Weeks
-                        </button>
+                      <label style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', display: 'block', marginBottom: 4 }}>UNIT</label>
+                      <div style={{ display: 'flex', border: `1px solid ${border}`, borderRadius: 6, overflow: 'hidden' }}>
+                        <button type="button" onClick={() => setDelayUnit('days')} style={{ flex: 1, border: 'none', padding: '7px 0', background: delayUnit === 'days' ? 'rgba(244,166,35,.15)' : '#0F1219', color: delayUnit === 'days' ? '#F4A623' : '#64748B', fontFamily: 'DM Mono, monospace', fontSize: 11 }}>Days</button>
+                        <button type="button" onClick={() => setDelayUnit('weeks')} style={{ flex: 1, border: 'none', padding: '7px 0', background: delayUnit === 'weeks' ? 'rgba(244,166,35,.15)' : '#0F1219', color: delayUnit === 'weeks' ? '#F4A623' : '#64748B', fontFamily: 'DM Mono, monospace', fontSize: 11 }}>Weeks</button>
                       </div>
                     </div>
                     <div>
-                      <label className="delay-lbl">START WEEK</label>
-                      <input
-                        className="delay-input mono"
-                        type="number"
-                        min={1}
-                        max={52}
-                        value={delayStartWeekInput}
-                        onChange={(e) => setDelayStartWeekInput(e.target.value)}
-                      />
+                      <label style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', display: 'block', marginBottom: 4 }}>START WEEK</label>
+                      <input type="number" min={1} max={52} value={delayStartWeekInput} onChange={(e) => setDelayStartWeekInput(e.target.value)} style={{ width: '100%', background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace', fontSize: 13 }} />
                     </div>
                   </div>
-                  <div className="delay-preview">
-                    = {delayPreviewDays} day{delayPreviewDays !== 1 ? 's' : ''} delay
-                    · Programme pushes forward {delayPreviewDays} day
-                    {delayPreviewDays !== 1 ? 's' : ''}
+                  <div style={{ background: 'rgba(244,166,35,.05)', border: '1px solid rgba(244,166,35,.15)', borderRadius: 7, padding: '7px 12px', marginBottom: 10, fontFamily: 'DM Mono, monospace', fontSize: 10, color: '#F4A623' }}>
+                    = {delayPreviewDays} day{delayPreviewDays !== 1 ? 's' : ''} delay · Programme pushes forward {delayPreviewDays} day{delayPreviewDays !== 1 ? 's' : ''}
                   </div>
                   <div style={{ marginBottom: 10 }}>
-                    <label className="delay-lbl">REASON FOR DELAY</label>
-                    <select
-                      className="delay-input"
-                      value={delayReasonInput}
-                      onChange={(e) => setDelayReasonInput(e.target.value)}
-                    >
-                      <option>Client delay</option>
-                      <option>Material shortage</option>
-                      <option>Weather / site conditions</option>
-                      <option>Planning / approval hold</option>
-                      <option>Contractor unavailable</option>
-                      <option>Design change</option>
-                      <option>Structural issue found</option>
-                      <option>Other</option>
+                    <label style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', display: 'block', marginBottom: 4 }}>REASON</label>
+                    <select value={delayReasonInput} onChange={(e) => setDelayReasonInput(e.target.value)} style={{ width: '100%', background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontSize: 13 }}>
+                      <option>Client delay</option><option>Material shortage</option><option>Weather / site conditions</option><option>Planning / approval hold</option><option>Contractor unavailable</option><option>Design change</option><option>Structural issue found</option><option>Other</option>
                     </select>
                   </div>
                   <div style={{ marginBottom: 10 }}>
-                    <label className="delay-lbl">NOTES</label>
-                    <input
-                      className="delay-input"
-                      type="text"
-                      placeholder="Additional details..."
-                      value={delayNotesInput}
-                      onChange={(e) => setDelayNotesInput(e.target.value)}
-                    />
+                    <label style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', display: 'block', marginBottom: 4 }}>NOTES</label>
+                    <textarea value={delayNotesInput} onChange={(e) => setDelayNotesInput(e.target.value)} rows={2} style={{ width: '100%', resize: 'vertical', background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontSize: 13 }} />
                   </div>
-                  <div className="delay-btn-row">
-                    <button className="btn btn-ac" type="submit">
-                      ⚠️ Log Delay &amp; Push Programme
-                    </button>
-                    <button className="btn btn-ghost" type="button" onClick={resetDelays}>
-                      Reset All
-                    </button>
-                  </div>
+                  <button type="submit" style={{ background: '#F4A623', color: '#000', border: 'none', borderRadius: 8, padding: '8px 14px', fontFamily: 'DM Mono, monospace', fontSize: 11, textTransform: 'uppercase', letterSpacing: 1 }}>Log Delay</button>
                 </form>
-              </div>
-              <div>
-                <div className="mini-lbl" style={{ marginBottom: 10 }}>
-                  Impact on Handover
-                </div>
-                <div className="impact-card">
-                  <div className="mini-lbl" style={{ marginBottom: 4 }}>
-                    DAYS LOST TO DELAYS
+                <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 10, overflow: 'hidden' }}>
+                  <div style={{ padding: '10px 12px', borderBottom: `1px solid ${border}`, fontFamily: 'Bebas Neue, sans-serif', letterSpacing: 2 }}>WEEKLY SITE NOTES</div>
+                  <div style={{ padding: 10, display: 'grid', gridTemplateColumns: '120px 1fr 140px 100px', gap: 10, alignItems: 'end' }}>
+                    <select value={siteNoteWeek} onChange={(e) => setSiteNoteWeek(e.target.value)} style={{ background: '#161B26', border: `1px solid ${border}`, borderRadius: 5, padding: '6px 8px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace', fontSize: 12 }}>
+                      {Array.from({ length: Math.max(1, durationWeeks ?? 19) }).map((_, i) => <option key={i + 1} value={String(i + 1)}>Week {i + 1}</option>)}
+                    </select>
+                    <input value={siteNoteText} onChange={(e) => setSiteNoteText(e.target.value)} placeholder="What happened on site this week..." style={{ background: '#161B26', border: `1px solid ${border}`, borderRadius: 5, padding: '6px 10px', color: '#E2E8F8', fontSize: 13 }} />
+                    <select value={siteNoteStatus} onChange={(e) => setSiteNoteStatus(e.target.value as SiteNoteEntry['status'])} style={{ background: '#161B26', border: `1px solid ${border}`, borderRadius: 5, padding: '6px 8px', color: '#E2E8F8', fontSize: 13 }}>
+                      <option value="on-track">✅ On Track</option><option value="slightly-behind">⚠️ Slightly Behind</option><option value="delayed">🔴 Delayed</option><option value="paused">⏸️ Paused</option><option value="ahead">🚀 Ahead</option>
+                    </select>
+                    <button type="button" onClick={addSiteNote} style={{ background: '#F4A623', color: '#000', border: 'none', borderRadius: 6, padding: '7px 8px', fontFamily: 'DM Mono, monospace', fontSize: 11 }}>+ Add Note</button>
                   </div>
-                  <div className="impact-days">{totalDelayDays}</div>
-                </div>
-                <div
-                  className="alert"
-                  style={{
-                    background:
-                      totalDelayDays === 0
-                        ? 'rgba(0,230,118,.07)'
-                        : 'rgba(255,61,87,.07)',
-                    border:
-                      totalDelayDays === 0
-                        ? '1px solid rgba(0,230,118,.2)'
-                        : '1px solid rgba(255,61,87,.2)',
-                    color: totalDelayDays === 0 ? 'var(--gr)' : 'var(--rd)',
-                  }}
-                >
-                  <span>{totalDelayDays === 0 ? '✅' : '⚠️'}</span>
-                  <span>
-                    {totalDelayDays === 0
-                      ? `No delays logged. Programme on original schedule — handover ${fmtPortalDate(project.handover_date)}.`
-                      : `${totalDelayWeeks} week(s) of delays logged. Revised handover: ${fmtPortalDate(revisedHandoverIso)}.`}
-                  </span>
-                </div>
-                <div className="mini-lbl" style={{ margin: '8px 0' }}>
-                  Delay Log
-                </div>
-                <div className="delay-log-list">
-                  {delayLogs.length === 0 ? (
-                    <div className="delay-log-empty">No delays logged yet.</div>
-                  ) : (
-                    delayLogs.map((d) => (
-                      <div key={d.id} className="delay-log-item">
-                        <div className="delay-log-top">
-                          <span>
-                            Wk {d.startWeek} · {d.reason}
-                          </span>
-                          <button
-                            type="button"
-                            className="lock-btn"
-                            onClick={() => removeDelayLog(d.id)}
-                            style={{ color: 'var(--rd)', borderColor: 'rgba(255,61,87,.3)' }}
-                          >
-                            ✕
-                          </button>
-                        </div>
-                        <div className="delay-log-meta">
-                          {d.days} day(s) · {fmtPortalDate(d.dateLogged)}
-                          {d.notes ? ` · ${d.notes}` : ''}
-                        </div>
-                      </div>
-                    ))
-                  )}
+                  <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 8 }}>
+                    <thead>
+                      <tr>
+                        <th style={{ padding: '6px 8px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>WEEK</th>
+                        <th style={{ padding: '6px 8px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>NOTE / PROGRESS UPDATE</th>
+                        <th style={{ padding: '6px 8px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>STATUS</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {siteNotes.length === 0 ? (
+                        <tr><td colSpan={3} style={{ padding: '6px 8px', fontFamily: 'DM Mono, monospace', fontSize: 10, color: '#64748B' }}>No notes yet. Add your first site note above.</td></tr>
+                      ) : (
+                        siteNotes.map((n) => (
+                          <tr key={n.id}>
+                            <td style={{ padding: '6px 8px', fontFamily: 'DM Mono, monospace', fontSize: 10 }}>{`Week ${n.week}`}</td>
+                            <td style={{ padding: '6px 8px', fontSize: 11 }}>{n.note}</td>
+                            <td style={{ padding: '6px 8px', fontFamily: 'DM Mono, monospace', fontSize: 10, color: n.status === 'on-track' || n.status === 'ahead' ? '#00E676' : n.status === 'slightly-behind' ? '#F4A623' : '#FF3D57' }}>{n.status}</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
+            </div>
+          </div>
+          <div>
+            <div style={{ background: 'rgba(255,61,87,.05)', border: '1px solid rgba(255,61,87,.2)', borderRadius: 10, padding: '14px 16px', marginBottom: 10 }}>
+              <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', marginBottom: 4 }}>DAYS LOST</div>
+              <div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 32, color: '#FF3D57' }}>{totalDelayDays}</div>
+            </div>
+            <div style={{ background: 'rgba(0,230,118,.07)', border: '1px solid rgba(0,230,118,.2)', borderRadius: 9, padding: '9px 13px', marginBottom: 10, fontSize: 12, color: '#00E676', display: 'flex', gap: 8 }}>
+              <span>✅</span>
+              <span>{totalDelayDays === 0 ? `No delays logged. Programme on original schedule — handover ${fmtPortalDate(project.handover_date)}.` : `${totalDelayWeeks} week(s) of delays logged. Revised handover: ${fmtPortalDate(revisedHandoverIso)}.`}</span>
+            </div>
+            <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 10, overflow: 'hidden' }}>
+              <div style={{ padding: '10px 12px', borderBottom: `1px solid ${border}`, fontFamily: 'Bebas Neue, sans-serif', letterSpacing: 2 }}>DELAY LOG</div>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead><tr><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>DATE</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>REASON</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>DAYS</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>IMPACT</th></tr></thead>
+                <tbody>
+                  {delayLogs.length === 0 ? <tr><td colSpan={4} style={{ padding: '10px', color: '#64748B', fontFamily: 'DM Mono, monospace', fontSize: 10 }}>No delays logged yet.</td></tr> : delayLogs.map((d) => (
+                    <tr key={d.id}>
+                      <td style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 10 }}>{fmtPortalDate(d.dateLogged)}</td>
+                      <td style={{ padding: '8px 10px', fontSize: 11 }}>{d.reason}</td>
+                      <td style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#FF3D57' }}>{d.days}</td>
+                      <td style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 10, color: '#64748B' }}>Wk {d.startWeek}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -5117,182 +5090,64 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       break
     case 'variations':
       content = (
-        <div className="space-y-4">
-          <div className="stats" style={{ gridTemplateColumns: 'repeat(4,1fr)', marginBottom: 14 }}>
-            <div className="sc a">
-              <div className="sl">Original Contract</div>
-              <div className="sv" style={{ color: 'var(--ac)' }}>
-                {project.contract_value != null ? formatMoneyGBP(num(project.contract_value)) : '—'}
+        <div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 14 }}>
+            {[
+              ['ORIGINAL CONTRACT', project.contract_value != null ? formatMoneyGBP(num(project.contract_value)) : '—', '#F4A623'],
+              ['VARIATIONS TOTAL', formatMoneyGBP(variationTotal), '#00E676'],
+              ['REVISED CONTRACT', project.contract_value != null ? formatMoneyGBP(revisedContractWithVars) : '—', '#3B8BFF'],
+              ['VARIATIONS COUNT', String(variationRows.length), '#9C27B0'],
+            ].map(([label, value, color]) => (
+              <div key={label} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, padding: '12px 14px' }}>
+                <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, letterSpacing: 1, color: '#64748B' }}>{label}</div>
+                <div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 22, color }}>{value}</div>
               </div>
-            </div>
-            <div className="sc g">
-              <div className="sl">Variations Total</div>
-              <div className="sv" style={{ color: 'var(--gr)' }}>
-                {formatMoneyGBP(variationTotal)}
-              </div>
-            </div>
-            <div className="sc b">
-              <div className="sl">Revised Contract</div>
-              <div className="sv" style={{ color: 'var(--bl)' }}>
-                {project.contract_value != null
-                  ? formatMoneyGBP(revisedContractWithVars)
-                  : '—'}
-              </div>
-            </div>
-            <div className="sc p">
-              <div className="sl">Variations Count</div>
-              <div className="sv" style={{ color: 'var(--pu)' }}>
-                {variationRows.length}
-              </div>
-            </div>
+            ))}
           </div>
-          <div className="panel">
-            <div className="ph">
-              <div>
-                <div className="pt">VARIATION ORDERS</div>
-                <div className="ps">
-                  Additional works outside original contract scope · Unlimited VOs
-                </div>
-              </div>
+          <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, overflow: 'hidden' }}>
+            <div style={{ padding: '12px 18px', borderBottom: `1px solid ${border}`, background: 'rgba(244,166,35,.03)' }}>
+              <div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 16, letterSpacing: 2 }}>VARIATION ORDERS</div>
             </div>
             <div style={{ padding: '14px 20px' }}>
-              <form className="variation-form-shell" onSubmit={addVariation}>
-                <div className="mini-lbl" style={{ marginBottom: 10 }}>
-                  Add New Variation Order
-                </div>
-                <div className="variation-row">
-                  <div>
-                    <label className="delay-lbl">DESCRIPTION</label>
-                    <input
-                      className="delay-input"
-                      type="text"
-                      placeholder="Describe the variation work..."
-                      value={varDesc}
-                      onChange={(e) => setVarDesc(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="delay-lbl">TRADE / ITEM</label>
-                    <input
-                      className="delay-input"
-                      type="text"
-                      placeholder="e.g. Plastering..."
-                      value={varTrade}
-                      onChange={(e) => setVarTrade(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="delay-lbl">VALUE £</label>
-                    <input
-                      className="delay-input mono"
-                      type="number"
-                      min={0}
-                      value={varValue}
-                      onChange={(e) => setVarValue(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="delay-lbl">PROG. DAYS</label>
-                    <input
-                      className="delay-input mono"
-                      type="number"
-                      min={0}
-                      value={varDays}
-                      onChange={(e) => setVarDays(e.target.value)}
-                    />
-                  </div>
-                  <div>
-                    <label className="delay-lbl">STATUS</label>
-                    <select
-                      className="delay-input"
-                      value={varStatus}
-                      onChange={(e) =>
-                        setVarStatus(
-                          e.target.value as 'pending' | 'approved' | 'rejected',
-                        )
-                      }
-                    >
-                      <option value="pending">⏳ Pending</option>
-                      <option value="approved">✅ Approved</option>
-                      <option value="rejected">❌ Rejected</option>
-                    </select>
-                  </div>
-                  <button className="btn btn-ac" type="submit" style={{ padding: '7px 10px' }}>
-                    + Add VO
-                  </button>
+              <form onSubmit={addVariation} style={{ background: '#161B26', border: `1px solid ${border}`, borderRadius: 10, padding: '14px 16px', marginBottom: 14 }}>
+                <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, letterSpacing: 1, color: '#64748B', marginBottom: 10 }}>ADD NEW VARIATION ORDER</div>
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 90px 90px 100px 110px', gap: 10, alignItems: 'end', marginBottom: 10 }}>
+                  <input type="text" placeholder="DESCRIPTION" value={varDesc} onChange={(e) => setVarDesc(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8' }} />
+                  <input type="text" placeholder="TRADE / ITEM" value={varTrade} onChange={(e) => setVarTrade(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8' }} />
+                  <input type="number" placeholder="VALUE £" min={0} value={varValue} onChange={(e) => setVarValue(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
+                  <input type="number" placeholder="PROG. DAYS" min={0} value={varDays} onChange={(e) => setVarDays(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
+                  <select value={varStatus} onChange={(e) => setVarStatus(e.target.value as 'pending' | 'approved' | 'rejected')} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 8px', color: '#E2E8F8', fontSize: 12 }}>
+                    <option value="pending">⏳ Pending</option><option value="approved">✅ Approved</option><option value="rejected">❌ Rejected</option>
+                  </select>
+                  <button type="submit" style={{ background: '#F4A623', border: 'none', color: '#000', borderRadius: 6, padding: '7px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11 }}>+ Add VO</button>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <div>
-                    <label className="delay-lbl">DATE RAISED</label>
-                    <input
-                      className="delay-input mono"
-                      type="date"
-                      value={varDate}
-                      onChange={(e) => setVarDate(e.target.value)}
-                    />
-                  </div>
-                  <div />
-                </div>
-                <div className="variation-note">
-                  💡 Prog. Days = extra days this variation adds to the programme (0 if no programme impact)
+                  <input type="date" value={varDate} onChange={(e) => setVarDate(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
+                  <input type="date" value={varApprovalDate} onChange={(e) => setVarApprovalDate(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
                 </div>
               </form>
               <div style={{ overflowX: 'auto' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse' }}>
                   <thead>
-                    <tr>
-                      {['VO #', 'Description', 'Trade', 'Date', 'Value £', 'Status', 'Action'].map(
-                        (h) => (
-                          <th key={h} className="var-th">
-                            {h}
-                          </th>
-                        ),
-                      )}
-                    </tr>
+                    <tr>{['VO #', 'DESCRIPTION', 'TRADE', 'DATE RAISED', 'VALUE £', 'PROG. DAYS', 'CLIENT APPROVAL', 'STATUS', 'ACTION'].map((h) => <th key={h} style={{ background: '#161B26', color: '#64748B', fontFamily: 'DM Mono, monospace', fontSize: 9, letterSpacing: 1, textTransform: 'uppercase', padding: '8px 10px', textAlign: 'left', borderBottom: `1px solid ${border}` }}>{h}</th>)}</tr>
                   </thead>
                   <tbody>
-                    {variationRows.length === 0 ? (
-                      <tr>
-                        <td colSpan={7} className="var-empty">
-                          No variations logged yet. Add your first VO above.
+                    {variationRows.length === 0 ? <tr><td colSpan={9} style={{ padding: '14px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#64748B', textAlign: 'center' }}>No variations logged yet. Add your first VO above.</td></tr> : variationRows.map((v) => (
+                      <tr key={v.id}>
+                        <td style={{ padding: '7px 10px', fontFamily: 'DM Mono, monospace', color: '#F4A623' }}>{v.voNumber}</td>
+                        <td style={{ padding: '7px 10px' }}>{v.description}</td>
+                        <td style={{ padding: '7px 10px' }}>{v.trade}</td>
+                        <td style={{ padding: '7px 10px', fontFamily: 'DM Mono, monospace' }}>{fmtPortalDate(v.dateRaised)}</td>
+                        <td style={{ padding: '7px 10px', fontFamily: 'DM Mono, monospace' }}>{formatMoneyGBP(v.value)}</td>
+                        <td style={{ padding: '7px 10px', fontFamily: 'DM Mono, monospace' }}>{v.programmeDays}</td>
+                        <td style={{ padding: '7px 10px', fontFamily: 'DM Mono, monospace' }}>{v.approvalDate ? fmtPortalDate(v.approvalDate) : '—'}</td>
+                        <td style={{ padding: '7px 10px' }}>
+                          <span style={{ display: 'inline-flex', padding: '2px 7px', borderRadius: 4, fontSize: 9, fontFamily: 'DM Mono, monospace', background: v.status === 'approved' ? 'rgba(0,230,118,.1)' : v.status === 'rejected' ? 'rgba(255,61,87,.1)' : 'rgba(244,166,35,.1)', border: v.status === 'approved' ? '1px solid rgba(0,230,118,.2)' : v.status === 'rejected' ? '1px solid rgba(255,61,87,.2)' : '1px solid rgba(244,166,35,.2)', color: v.status === 'approved' ? '#00E676' : v.status === 'rejected' ? '#FF3D57' : '#F4A623' }}>{v.status}</span>
                         </td>
+                        <td style={{ padding: '7px 10px' }}><button type="button" onClick={() => removeVariation(v.id)} style={{ border: '1px solid rgba(255,61,87,.3)', background: 'transparent', color: '#FF3D57', borderRadius: 4, fontSize: 10, padding: '2px 6px' }}>✕</button></td>
                       </tr>
-                    ) : (
-                      variationRows.map((v) => (
-                        <tr key={v.id}>
-                          <td className="var-td mono ac">{v.voNumber}</td>
-                          <td className="var-td">{v.description}</td>
-                          <td className="var-td">{v.trade}</td>
-                          <td className="var-td mono">{fmtPortalDate(v.dateRaised)}</td>
-                          <td className="var-td mono">{formatMoneyGBP(v.value)}</td>
-                          <td className="var-td">
-                            <span className={`badge ${v.status === 'approved' ? 'b-gr' : v.status === 'rejected' ? 'b-rd' : 'b-ac'}`}>
-                              {v.status}
-                            </span>
-                          </td>
-                          <td className="var-td">
-                            <button
-                              type="button"
-                              className="lock-btn"
-                              onClick={() => removeVariation(v.id)}
-                              style={{ color: 'var(--rd)', borderColor: 'rgba(255,61,87,.3)' }}
-                            >
-                              ✕
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    )}
+                    ))}
                   </tbody>
-                  <tfoot>
-                    <tr>
-                      <td className="var-foot" colSpan={4}>
-                        TOTAL
-                      </td>
-                      <td className="var-foot ac">{formatMoneyGBP(variationTotal)}</td>
-                      <td className="var-foot" colSpan={2} />
-                    </tr>
-                  </tfoot>
                 </table>
               </div>
             </div>
@@ -5302,101 +5157,40 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       break
     case 'on-track':
       content = (
-        <div className="space-y-4">
-          <div className="stats" style={{ gridTemplateColumns: 'repeat(5,1fr)', marginBottom: 14 }}>
-            <div className="sc a"><div className="sl">Week</div><div className="sv" style={{ color: 'var(--ac)' }}>{currentWeekDisplay.replace('Week ', 'Wk ')}</div><div className="ss">current</div></div>
-            <div className="sc g"><div className="sl">Green</div><div className="sv" style={{ color: 'var(--gr)' }}>{ragCounts.green}</div><div className="ss">on track</div></div>
-            <div className="sc b"><div className="sl">Amber</div><div className="sv" style={{ color: 'var(--ac)' }}>{ragCounts.amber}</div><div className="ss">watch</div></div>
-            <div className="sc p"><div className="sl">Red</div><div className="sv" style={{ color: 'var(--rd)' }}>{ragCounts.red}</div><div className="ss">off track</div></div>
-            <div className="sc t"><div className="sl">On Track %</div><div className="sv" style={{ color: 'var(--bl)' }}>{overallOnTrackPct.toFixed(0)}%</div><div className="ss">overall</div></div>
+        <div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 10, marginBottom: 14 }}>
+            <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, padding: '12px 14px' }}><div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B' }}>WEEK</div><div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 22, color: '#F4A623' }}>{currentWeekDisplay.replace('Week ', 'Wk ')}</div></div>
+            <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, padding: '12px 14px' }}><div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B' }}>PLANNED % DRAWN</div><div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 22 }}>{weeklyPlanRows.find((w) => w.current)?.plannedPct.toFixed(1) ?? '0.0'}%</div></div>
+            <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, padding: '12px 14px' }}><div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B' }}>ACTUAL % DRAWN</div><div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 22, color: '#00E676' }}>{weeklyPlanRows.find((w) => w.current)?.actualPct.toFixed(1) ?? '0.0'}%</div></div>
+            <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, padding: '12px 14px' }}><div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B' }}>VARIANCE</div><div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 22, color: '#00E676' }}>{`+${((weeklyPlanRows.find((w) => w.current)?.actualPct ?? 0) - (weeklyPlanRows.find((w) => w.current)?.plannedPct ?? 0)).toFixed(1)}%`}</div></div>
+            <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, padding: '12px 14px' }}><div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B' }}>STATUS</div><div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 18, color: '#3B8BFF' }}>🚀 AHEAD</div></div>
           </div>
-          <div className="panel">
-            <div className="ph">
-              <div>
-                <div className="pt">WEEKLY SITE DIARY</div>
-                <div className="ps">Planned vs actual progress by trade · notes + RAG</div>
-              </div>
+          <div style={{ marginBottom: 14, background: 'rgba(59,139,255,.08)', border: '1px solid rgba(59,139,255,.2)', color: '#3B8BFF', borderRadius: 9, padding: '9px 13px', fontSize: 12, display: 'flex', gap: 8 }}>
+            <span>🚀</span><span>Ahead of programme. Keep the momentum!</span>
+          </div>
+          <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, overflow: 'hidden' }}>
+            <div style={{ padding: '12px 18px', borderBottom: `1px solid ${border}`, background: 'rgba(244,166,35,.03)' }}>
+              <div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 16, letterSpacing: 2 }}>WEEK BY WEEK TRACKER</div>
             </div>
             <div style={{ overflowX: 'auto' }}>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead>
-                  <tr>
-                    {['Trade', 'Planned %', 'Actual %', 'Site Note', 'RAG Status'].map((h) => (
-                      <th key={h} className="var-th">{h}</th>
-                    ))}
-                  </tr>
-                </thead>
+                <thead><tr>{['WEEK', 'DATES', 'PLANNED CERT', 'ACTUAL CERT', 'PLANNED CUMUL', 'ACTUAL CUMUL', 'VARIANCE £', 'SITE NOTE', 'STATUS'].map((h) => <th key={h} style={{ background: '#161B26', color: '#64748B', fontFamily: 'DM Mono, monospace', fontSize: 9, letterSpacing: 1, textTransform: 'uppercase', padding: '8px 10px', textAlign: 'left', borderBottom: `1px solid ${border}` }}>{h}</th>)}</tr></thead>
                 <tbody>
-                  {onTrackRows.length === 0 ? (
-                    <tr><td colSpan={5} className="var-empty">No trade lines available yet.</td></tr>
-                  ) : (
-                    onTrackRows.map((r) => (
-                      <tr key={r.trade}>
-                        <td className="var-td">{r.trade}</td>
-                        <td className="var-td mono">{r.plannedPct.toFixed(1)}%</td>
-                        <td className="var-td mono">
-                          <input
-                            className="delay-input mono"
-                            style={{ maxWidth: 90, padding: '4px 6px' }}
-                            type="number"
-                            min={0}
-                            max={100}
-                            value={siteDiary[r.trade]?.actualPct ?? r.actualPct}
-                            onChange={(e) =>
-                              setSiteDiary((prev) => ({
-                                ...prev,
-                                [r.trade]: {
-                                  actualPct: Math.max(0, Math.min(100, Number(e.target.value || 0))),
-                                  note: prev[r.trade]?.note ?? (r.note === '—' ? '' : r.note),
-                                  rag: prev[r.trade]?.rag ?? r.rag,
-                                },
-                              }))
-                            }
-                          />
-                        </td>
-                        <td className="var-td">
-                          <input
-                            className="delay-input"
-                            style={{ padding: '4px 6px' }}
-                            type="text"
-                            placeholder="Site update..."
-                            value={siteDiary[r.trade]?.note ?? (r.note === '—' ? '' : r.note)}
-                            onChange={(e) =>
-                              setSiteDiary((prev) => ({
-                                ...prev,
-                                [r.trade]: {
-                                  actualPct: prev[r.trade]?.actualPct ?? r.actualPct,
-                                  note: e.target.value,
-                                  rag: prev[r.trade]?.rag ?? r.rag,
-                                },
-                              }))
-                            }
-                          />
-                        </td>
-                        <td className="var-td">
-                          <select
-                            className="delay-input"
-                            style={{ padding: '4px 6px', maxWidth: 150 }}
-                            value={siteDiary[r.trade]?.rag ?? r.rag}
-                            onChange={(e) =>
-                              setSiteDiary((prev) => ({
-                                ...prev,
-                                [r.trade]: {
-                                  actualPct: prev[r.trade]?.actualPct ?? r.actualPct,
-                                  note: prev[r.trade]?.note ?? (r.note === '—' ? '' : r.note),
-                                  rag: e.target.value as 'red' | 'amber' | 'green',
-                                },
-                              }))
-                            }
-                          >
-                            <option value="green">🟢 Green</option>
-                            <option value="amber">🟠 Amber</option>
-                            <option value="red">🔴 Red</option>
-                          </select>
-                        </td>
-                      </tr>
-                    ))
-                  )}
+                  {weeklyPlanRows.map((r) => (
+                    <tr key={r.weekNum} style={r.current ? { background: 'rgba(244,166,35,.04)' } : undefined}>
+                      <td style={{ padding: '6px 10px', fontFamily: 'Bebas Neue, sans-serif', fontSize: 14, color: r.current ? '#F4A623' : '#64748B' }}>WK {r.weekNum}</td>
+                      <td style={{ padding: '6px 10px', fontFamily: 'DM Mono, monospace', fontSize: 10, color: '#64748B' }}>{r.range}</td>
+                      <td style={{ padding: '6px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#64748B' }}>{formatMoneyGBP(r.weekPlanned)}</td>
+                      <td style={{ padding: '6px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: r.weekActual > 0 ? '#F4A623' : '#64748B' }}>{r.weekActual > 0 ? formatMoneyGBP(r.weekActual) : '—'}</td>
+                      <td style={{ padding: '6px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#64748B' }}>{formatMoneyGBP(r.plannedCumul)}</td>
+                      <td style={{ padding: '6px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#00E676' }}>{formatMoneyGBP(r.actualCumul)}</td>
+                      <td style={{ padding: '6px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: r.variance >= 0 ? '#00E676' : '#FF3D57' }}>{r.variance === 0 ? '—' : `${r.variance > 0 ? '+' : ''}${formatMoneyGBP(r.variance)}`}</td>
+                      <td style={{ padding: '6px 10px', fontSize: 11, color: '#64748B' }}>{siteNotes.find((n) => n.week === r.weekNum)?.note ?? '—'}</td>
+                      <td style={{ padding: '6px 10px' }}>
+                        {r.weekNum <= (currentWeekNumber ?? 0) ? <span style={{ display: 'inline-flex', padding: '2px 7px', borderRadius: 4, fontSize: 9, fontFamily: 'DM Mono, monospace', background: 'rgba(59,139,255,.08)', border: '1px solid rgba(59,139,255,.2)', color: '#3B8BFF' }}>🚀 Ahead</span> : <span style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B' }}>Upcoming</span>}
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
