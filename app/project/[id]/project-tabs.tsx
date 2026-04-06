@@ -1447,6 +1447,81 @@ function normalizeProgrammeItem(
   }
 }
 
+type ProgrammeBarTone = {
+  bg: string
+  border: string
+  prog: string
+  text: string
+}
+
+function programmeBarTone(color: string): ProgrammeBarTone {
+  const c = color.toUpperCase()
+  if (c === '#F4A623')
+    return {
+      bg: 'rgba(244,166,35,.18)',
+      border: 'rgba(244,166,35,.4)',
+      prog: '#F4A623',
+      text: '#F4A623',
+    }
+  if (c === '#00E676')
+    return {
+      bg: 'rgba(0,230,118,.18)',
+      border: 'rgba(0,230,118,.4)',
+      prog: '#00E676',
+      text: '#00E676',
+    }
+  if (c === '#3B8BFF')
+    return {
+      bg: 'rgba(59,139,255,.22)',
+      border: 'rgba(59,139,255,.5)',
+      prog: '#3B8BFF',
+      text: '#3B8BFF',
+    }
+  if (c === '#FF3D57')
+    return {
+      bg: 'rgba(255,61,87,.18)',
+      border: 'rgba(255,61,87,.4)',
+      prog: '#FF3D57',
+      text: '#FF3D57',
+    }
+  if (c === '#9C27B0')
+    return {
+      bg: 'rgba(139,92,246,.18)',
+      border: 'rgba(139,92,246,.4)',
+      prog: '#8B5CF6',
+      text: '#8B5CF6',
+    }
+  if (c === '#00BFA5')
+    return {
+      bg: 'rgba(0,191,165,.2)',
+      border: 'rgba(0,191,165,.45)',
+      prog: '#00BFA5',
+      text: '#00BFA5',
+    }
+  if (c === '#00BCD4')
+    return {
+      bg: 'rgba(0,191,165,.18)',
+      border: 'rgba(0,191,165,.4)',
+      prog: '#00BFA5',
+      text: '#00BFA5',
+    }
+  return {
+    bg: 'rgba(100,110,130,.35)',
+    border: 'rgba(100,110,130,.55)',
+    prog: '#8899AA',
+    text: '#8899AA',
+  }
+}
+
+/** Gantt bar colours by phase name (Phase 1 Groundworks / Internal Works / Finishes). */
+function programmePhaseTone(phase: string): ProgrammeBarTone {
+  const p = phase.trim()
+  if (/phase\s*1|groundworks/i.test(p)) return programmeBarTone('#F4A623')
+  if (/phase\s*2|internal works/i.test(p)) return programmeBarTone('#3B8BFF')
+  if (/phase\s*3|finishes|fit out/i.test(p)) return programmeBarTone('#00BFA5')
+  return programmeBarTone('#8899AA')
+}
+
 type ProgrammeScurveCanvasProps = {
   contract: number
   projectStartMs: number
@@ -1889,17 +1964,6 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     weekMetaMs,
   ])
 
-  function barTone(color: string) {
-    const c = color.toUpperCase()
-    if (c === '#F4A623') return { bg: 'rgba(244,166,35,.18)', border: 'rgba(244,166,35,.4)', prog: '#F4A623', text: '#F4A623' }
-    if (c === '#00E676') return { bg: 'rgba(0,230,118,.18)', border: 'rgba(0,230,118,.4)', prog: '#00E676', text: '#00E676' }
-    if (c === '#3B8BFF') return { bg: 'rgba(59,139,255,.22)', border: 'rgba(59,139,255,.5)', prog: '#3B8BFF', text: '#3B8BFF' }
-    if (c === '#FF3D57') return { bg: 'rgba(255,61,87,.18)', border: 'rgba(255,61,87,.4)', prog: '#FF3D57', text: '#FF3D57' }
-    if (c === '#9C27B0') return { bg: 'rgba(139,92,246,.18)', border: 'rgba(139,92,246,.4)', prog: '#8B5CF6', text: '#8B5CF6' }
-    if (c === '#00BCD4') return { bg: 'rgba(0,191,165,.18)', border: 'rgba(0,191,165,.4)', prog: '#00BFA5', text: '#00BFA5' }
-    return { bg: 'rgba(100,110,130,.35)', border: 'rgba(100,110,130,.55)', prog: '#8899AA', text: '#8899AA' }
-  }
-
   const tradeLegend = useMemo(() => {
     const seen = new Set<string>()
     const out: { label: string; bg: string; border: string }[] = []
@@ -1907,7 +1971,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
       const first = items[0]
       if (!first || seen.has(phase)) continue
       seen.add(phase)
-      const tone = barTone(first.colour)
+      const tone = programmePhaseTone(phase)
       out.push({ label: phase, bg: tone.bg, border: tone.border })
     }
     return out
@@ -1978,7 +2042,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                   <span className="phase-text">{phase}</span>
                 </div>
                 {items.map((item) => {
-                  const tone = barTone(item.colour)
+                  const tone = programmePhaseTone(phase)
                   const letter = item.trade_name.slice(0, 1).toUpperCase()
                   const locked = item.percent_complete >= 100
                   return (
@@ -1999,7 +2063,11 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                       <span className="label-name" title={item.trade_name}>
                         {item.trade_name}
                       </span>
-                      {locked ? <span className="locked-icon">🔒</span> : null}
+                      {locked ? (
+                        <span className="locked-icon" aria-hidden>
+                          🔒
+                        </span>
+                      ) : null}
                     </div>
                   )
                 })}
@@ -2058,7 +2126,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                 <div key={`rows-${phase}`}>
                   <div className="chart-row phase-row" />
                   {items.map((item) => {
-                    const tone = barTone(item.colour)
+                    const tone = programmePhaseTone(phase)
                     const left = ((item.start_week - minWeek) / weekMeta.length) * 100
                     const width =
                       ((item.end_week - item.start_week + 1) / weekMeta.length) * 100
@@ -2086,9 +2154,14 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                             background: tone.prog,
                           }}
                         />
-                        <div className="gbar-text" style={{ left: `calc(${left}% + 5px)` }}>
+                        <div className="gbar-text" style={{ left: `calc(${left}% + 6px)` }}>
                           {Math.round(item.percent_complete)}%
                         </div>
+                        {locked ? (
+                          <span className="chart-lock-icon" aria-hidden title="Complete">
+                            🔒
+                          </span>
+                        ) : null}
                       </div>
                     )
                   })}
@@ -2262,21 +2335,22 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
           color: #64748b;
         }
         .gantt-label-row {
-          height: 28px;
+          height: 36px;
           display: flex;
           align-items: center;
           padding: 0 12px;
           border-bottom: 1px solid rgba(30, 37, 53, 0.6);
           transition: background 0.1s;
           cursor: default;
-          gap: 6px;
+          gap: 8px;
         }
         .gantt-label-row:hover {
           background: rgba(255, 255, 255, 0.012);
         }
         .gantt-label-row.phase {
-          height: 22px;
-          background: rgba(244, 166, 35, 0.04);
+          height: 26px;
+          background: rgba(244, 166, 35, 0.1);
+          border-bottom: 1px solid rgba(244, 166, 35, 0.22);
         }
         .gantt-label-row.locked-row {
           background: rgba(0, 230, 118, 0.03);
@@ -2286,7 +2360,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
           font-family: 'DM Mono', monospace;
           letter-spacing: 0.1em;
           text-transform: uppercase;
-          color: #64748b;
+          color: #94a3b8;
         }
         .label-name {
           font-size: 10px;
@@ -2297,18 +2371,20 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
           flex: 1;
         }
         .label-type {
-          width: 18px;
-          height: 18px;
-          border-radius: 3px;
-          font-size: 8px;
+          width: 20px;
+          height: 20px;
+          border-radius: 4px;
+          font-size: 9px;
+          font-weight: 600;
           font-family: 'DM Mono', monospace;
           text-align: center;
-          line-height: 18px;
+          line-height: 20px;
           flex-shrink: 0;
         }
         .locked-icon {
-          font-size: 10px;
+          font-size: 11px;
           color: #00e676;
+          flex-shrink: 0;
         }
         .gantt-chart {
           position: relative;
@@ -2340,13 +2416,14 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
           overflow-y: visible;
         }
         .chart-row {
-          height: 28px;
+          height: 36px;
           position: relative;
           border-bottom: 1px solid rgba(30, 37, 53, 0.6);
         }
         .chart-row.phase-row {
-          height: 22px;
-          background: rgba(244, 166, 35, 0.02);
+          height: 26px;
+          background: rgba(244, 166, 35, 0.1);
+          border-bottom: 1px solid rgba(244, 166, 35, 0.22);
         }
         .chart-row.locked-row {
           background: rgba(0, 230, 118, 0.02);
@@ -2354,22 +2431,33 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
         .gbar,
         .gbar-prog {
           position: absolute;
-          height: 14px;
-          top: 7px;
-          border-radius: 3px;
+          height: 16px;
+          top: 10px;
+          border-radius: 4px;
         }
         .gbar-prog {
-          opacity: 0.5;
+          opacity: 0.55;
         }
         .gbar-text {
           position: absolute;
-          top: 8px;
+          top: 11px;
           font-family: 'DM Mono', monospace;
-          font-size: 8px;
-          color: rgba(255, 255, 255, 0.9);
+          font-size: 9px;
+          color: rgba(255, 255, 255, 0.95);
           z-index: 3;
           pointer-events: none;
           white-space: nowrap;
+        }
+        .chart-lock-icon {
+          position: absolute;
+          right: 10px;
+          top: 50%;
+          transform: translateY(-50%);
+          z-index: 4;
+          font-size: 12px;
+          line-height: 1;
+          color: #00e676;
+          pointer-events: none;
         }
         .week-line {
           position: absolute;
