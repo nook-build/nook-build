@@ -157,7 +157,10 @@ type ProgrammeSeed = {
 type DelayLogEntry = {
   id: string
   startWeek: number
+  /** Calendar / legacy display (weeks × 7 when unit weeks). */
   days: number
+  /** Mon–Fri days for programme / handover (days = duration; weeks = duration × 5). */
+  workingDays: number
   reason: string
   notes: string
   dateLogged: string
@@ -474,6 +477,17 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   const [amountThisWeek, setAmountThisWeek] = useState('')
   const [cumulativePercentInput, setCumulativePercentInput] = useState('')
   const [lineStatus, setLineStatus] = useState<'paid' | 'unpaid'>('unpaid')
+  const [approvedValuationVOs, setApprovedValuationVOs] = useState<
+    {
+      id: string
+      voNumber: string
+      description: string
+      trade: string
+      value: number
+    }[]
+  >([])
+  const [voPctThisWeek, setVoPctThisWeek] = useState<Record<string, number>>({})
+  const [pctDraft, setPctDraft] = useState<Record<string, string>>({})
 
   useEffect(() => {
     try {
@@ -531,6 +545,26 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
         .order('start_week', { ascending: true })
       if (!cancelled && pData) {
         setProgrammeItems(pData as { trade_name: string; phase: string }[])
+      }
+
+      const { data: vData } = await supabase
+        .from('variations')
+        .select('id, vo_number, description, trade, value, status')
+        .eq('project_id', project.id)
+      if (!cancelled && vData) {
+        const rows = (vData as Record<string, unknown>[]).filter(
+          (row) =>
+            String(row.status ?? '').toLowerCase() === 'approved',
+        )
+        setApprovedValuationVOs(
+          rows.map((row) => ({
+            id: String(row.id ?? ''),
+            voNumber: String(row.vo_number ?? '').trim() || 'VO',
+            description: String(row.description ?? ''),
+            trade: String(row.trade ?? '—'),
+            value: Number(row.value ?? 0),
+          })),
+        )
       }
 
       setLoading(false)
@@ -611,24 +645,29 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     return groups
   }, [filteredRows, phaseOrder, phaseForDescription])
 
-  const { contractSum, thisWeekCertificate } =
-    useMemo(() => {
-      const lineSum = filteredRows.reduce((s, r) => s + num(r.contract_value), 0)
-      const projectCv =
-        project.contract_value != null ? num(project.contract_value) : 0
-      const contractSum =
-        projectCv > 0 ? projectCv : lineSum > 0 ? lineSum : 0
+  const contractSum = useMemo(() => {
+    const lineSum = filteredRows.reduce((s, r) => s + num(r.contract_value), 0)
+    const projectCv =
+      project.contract_value != null ? num(project.contract_value) : 0
+    return projectCv > 0 ? projectCv : lineSum > 0 ? lineSum : 0
+  }, [filteredRows, project.contract_value])
 
-      const thisWeekCertificate = filteredRows.reduce(
-        (s, r) => s + num(r.amount_due),
-        0,
-      )
+  const thisWeekCertificateBase = useMemo(
+    () =>
+      filteredRows.reduce((s, r) => s + num(r.amount_due), 0),
+    [filteredRows],
+  )
 
-      return {
-        contractSum,
-        thisWeekCertificate,
-      }
-    }, [filteredRows, project.contract_value])
+  const voThisWeekTotal = useMemo(
+    () =>
+      approvedValuationVOs.reduce((s, v) => {
+        const pct = voPctThisWeek[v.id] ?? 0
+        return s + (v.value * pct) / 100
+      }, 0),
+    [approvedValuationVOs, voPctThisWeek],
+  )
+
+  const thisWeekCertificate = thisWeekCertificateBase + voThisWeekTotal
 
   const variationsTotal = num(project.variations_total)
   const revisedContract =
@@ -712,13 +751,20 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
 
   async function updateRowPct(r: ValuationRecord, pct: number) {
     const cv = num(r.contract_value)
-    const amt = Math.round(((cv * pct) / 100) * 100) / 100
+    const pctClamped = Math.min(100, Math.max(0, pct))
+    const amt = Math.round(((cv * pctClamped) / 100) * 100) / 100
+    setRows((prev) =>
+      prev.map((row) =>
+        row.id === r.id
+          ? { ...row, percent_complete: pctClamped, amount_due: amt }
+          : row,
+      ),
+    )
     const { error } = await supabase
       .from('valuations')
-      .update({ percentage: pct, amount: amt })
+      .update({ percent_complete: pctClamped, amount_due: amt })
       .eq('id', r.id)
-    if (error) void error
-    else void refetchRows()
+    if (error) void refetchRows()
   }
 
   function navigateWeek(delta: number) {
@@ -775,9 +821,10 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       if (lockedIds.has(r.id)) continue
       await supabase
         .from('valuations')
-        .update({ percentage: 0, amount: 0 })
+        .update({ percent_complete: 0, amount_due: 0 })
         .eq('id', r.id)
     }
+    setVoPctThisWeek({})
     void refetchRows()
   }
 
@@ -785,10 +832,10 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     if (typeof window !== 'undefined') window.print()
   }
 
-  const totalContractCol = filteredRows.reduce(
-    (s, r) => s + num(r.contract_value),
-    0,
-  )
+  const variationContractCol = approvedValuationVOs.reduce((s, v) => s + v.value, 0)
+  const totalContractCol =
+    filteredRows.reduce((s, r) => s + num(r.contract_value), 0) +
+    variationContractCol
   const totalPrevDrawn = filteredRows.reduce(
     (s, r) =>
       s +
@@ -800,32 +847,57 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       ),
     0,
   )
-  const totalRemaining = filteredRows.reduce((s, r) => {
-    const cv = num(r.contract_value)
-    const prev = prevDrawnForTrade(
-      rows,
-      r.description ?? '',
-      activePeriod ?? '',
-      chronWeeks,
-    )
-    return s + Math.max(0, cv - prev)
-  }, 0)
+  const totalRemaining =
+    filteredRows.reduce((s, r) => {
+      const cv = num(r.contract_value)
+      const prev = prevDrawnForTrade(
+        rows,
+        r.description ?? '',
+        activePeriod ?? '',
+        chronWeeks,
+      )
+      return s + Math.max(0, cv - prev)
+    }, 0) + variationContractCol
 
-  const totalBalanceLeft = filteredRows.reduce((s, r) => {
-    const cv = num(r.contract_value)
-    const cum = pctCumulative(r)
-    const claimed =
-      cum != null ? (cv * cum) / 100 : prevDrawnForTrade(
-          rows,
-          r.description ?? '',
-          activePeriod ?? '',
-          chronWeeks,
-        ) + num(r.amount_due)
-    return s + Math.max(0, cv - claimed)
-  }, 0)
+  const totalBalanceLeft =
+    filteredRows.reduce((s, r) => {
+      const cv = num(r.contract_value)
+      const cum = pctCumulative(r)
+      const claimed =
+        cum != null ? (cv * cum) / 100 : prevDrawnForTrade(
+            rows,
+            r.description ?? '',
+            activePeriod ?? '',
+            chronWeeks,
+          ) + num(r.amount_due)
+      return s + Math.max(0, cv - claimed)
+    }, 0) +
+    approvedValuationVOs.reduce((s, v) => {
+      const pct = voPctThisWeek[v.id] ?? 0
+      const claimed = (v.value * pct) / 100
+      return s + Math.max(0, v.value - claimed)
+    }, 0)
+
+  const totalClaimedDisplay =
+    filteredRows.reduce((s, r) => {
+      const cv = num(r.contract_value)
+      const cum = pctCumulative(r)
+      const claimed =
+        cum != null ? (cv * cum) / 100 : prevDrawnForTrade(
+            rows,
+            r.description ?? '',
+            activePeriod ?? '',
+            chronWeeks,
+          ) + num(r.amount_due)
+      return s + claimed
+    }, 0) +
+    approvedValuationVOs.reduce((s, v) => {
+      const pct = voPctThisWeek[v.id] ?? 0
+      return s + (v.value * pct) / 100
+    }, 0)
 
   const footerClaimedPct =
-    revisedContract > 0 ? (certificatesPaidTotal / revisedContract) * 100 : 0
+    revisedContract > 0 ? (totalClaimedDisplay / revisedContract) * 100 : 0
 
   const certTotalPaid = certificatesPaidTotal
   const certOutstanding = useMemo(
@@ -1109,14 +1181,16 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                     </tr>
                   </thead>
                   <tbody>
-                    {tableGroups.length === 0 ? (
+                    {tableGroups.length === 0 &&
+                    approvedValuationVOs.length === 0 ? (
                       <tr>
                         <td colSpan={11} className="val-empty-cell">
                           No valuation lines for this period.
                         </td>
                       </tr>
                     ) : (
-                      tableGroups.map((g) => (
+                      <>
+                        {tableGroups.map((g) => (
                         <Fragment key={`ph-${g.phase}`}>
                           <tr>
                             <td colSpan={11} className="ph-cell">
@@ -1182,10 +1256,38 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     max={100}
                                     step={0.5}
                                     disabled={locked}
-                                    value={pctW ?? ''}
-                                    placeholder="0%"
+                                    value={
+                                      pctDraft[r.id] !== undefined
+                                        ? pctDraft[r.id]
+                                        : pctW != null && pctW !== 0
+                                          ? String(pctW)
+                                          : pctW === 0
+                                            ? '0'
+                                            : ''
+                                    }
+                                    placeholder="0"
+                                    onFocus={() => {
+                                      setPctDraft((d) => ({
+                                        ...d,
+                                        [r.id]:
+                                          pctW != null ? String(pctW) : '',
+                                      }))
+                                    }}
+                                    onBlur={() => {
+                                      setPctDraft((d) => {
+                                        const next = { ...d }
+                                        delete next[r.id]
+                                        return next
+                                      })
+                                    }}
                                     onChange={(e) => {
-                                      const v = parseFloat(e.target.value)
+                                      const raw = e.target.value
+                                      setPctDraft((d) => ({ ...d, [r.id]: raw }))
+                                      if (raw === '' || raw === '.') {
+                                        void updateRowPct(r, 0)
+                                        return
+                                      }
+                                      const v = parseFloat(raw)
                                       if (Number.isNaN(v)) return
                                       void updateRowPct(r, v)
                                     }}
@@ -1242,7 +1344,138 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                             )
                           })}
                         </Fragment>
-                      ))
+                      ))}
+                        {approvedValuationVOs.length > 0 ? (
+                          <>
+                            <tr>
+                              <td colSpan={11} className="ph-cell">
+                                VARIATIONS
+                              </td>
+                            </tr>
+                            {approvedValuationVOs.map((v) => {
+                              const pct = voPctThisWeek[v.id] ?? 0
+                              const amt =
+                                Math.round(((v.value * pct) / 100) * 100) / 100
+                              const claimed = amt
+                              const bal = Math.max(0, v.value - claimed)
+                              const claimedPct =
+                                v.value > 0 ? (claimed / v.value) * 100 : 0
+                              const leftPct = 100 - claimedPct
+                              const voKey = `vo-${v.id}`
+                              return (
+                                <tr key={voKey}>
+                                  <td className="td-item">
+                                    <span className="dot-active" />
+                                    <span>
+                                      {v.voNumber} · {v.description}
+                                    </span>
+                                  </td>
+                                  <td className="td-mono">
+                                    {formatMoneyGBP(v.value)}
+                                  </td>
+                                  <td className="td-mono td-mu">—</td>
+                                  <td className="td-mono">
+                                    {formatMoneyGBP(v.value)}
+                                  </td>
+                                  <td>
+                                    <span className="badge b-ac">VO</span>
+                                  </td>
+                                  <td>
+                                    <input
+                                      className={`pi ${pct > 0 ? 'hv' : ''}`}
+                                      type="number"
+                                      min={0}
+                                      max={100}
+                                      step={0.5}
+                                      value={
+                                        pctDraft[voKey] !== undefined
+                                          ? pctDraft[voKey]
+                                          : pct > 0
+                                            ? String(pct)
+                                            : pct === 0
+                                              ? '0'
+                                              : ''
+                                      }
+                                      placeholder="0"
+                                      onFocus={() => {
+                                        setPctDraft((d) => ({
+                                          ...d,
+                                          [voKey]: String(pct),
+                                        }))
+                                      }}
+                                      onBlur={() => {
+                                        setPctDraft((d) => {
+                                          const next = { ...d }
+                                          delete next[voKey]
+                                          return next
+                                        })
+                                      }}
+                                      onChange={(e) => {
+                                        const raw = e.target.value
+                                        setPctDraft((d) => ({
+                                          ...d,
+                                          [voKey]: raw,
+                                        }))
+                                        if (raw === '' || raw === '.') {
+                                          setVoPctThisWeek((p) => ({
+                                            ...p,
+                                            [v.id]: 0,
+                                          }))
+                                          return
+                                        }
+                                        const n = parseFloat(raw)
+                                        if (Number.isNaN(n)) return
+                                        setVoPctThisWeek((p) => ({
+                                          ...p,
+                                          [v.id]: Math.min(100, Math.max(0, n)),
+                                        }))
+                                      }}
+                                    />
+                                  </td>
+                                  <td className="td-mono td-mu">
+                                    {amt > 0 ? formatMoneyGBP(amt) : '—'}
+                                  </td>
+                                  <td className="td-claimed">
+                                    <span className="td-claimed-inner">
+                                      {formatMoneyGBP(claimed)}
+                                    </span>
+                                  </td>
+                                  <td className="td-mono">
+                                    {bal <= 0
+                                      ? '✓ Nil'
+                                      : formatMoneyGBP(bal)}
+                                  </td>
+                                  <td className="td-split">
+                                    <div className="split-bar-wrap">
+                                      <div
+                                        className="split-bar-fill"
+                                        style={{
+                                          width: `${Math.min(100, claimedPct)}%`,
+                                          background:
+                                            claimedPct >= 100
+                                              ? 'var(--gr)'
+                                              : claimedPct > 50
+                                                ? 'var(--tl)'
+                                                : 'var(--ac)',
+                                        }}
+                                      />
+                                    </div>
+                                    <div className="split-meta">
+                                      <span className="c-tl">
+                                        ✓ {claimedPct.toFixed(1)}%
+                                      </span>
+                                      <span className="c-rd">
+                                        ⬜ {leftPct.toFixed(1)}%
+                                      </span>
+                                    </div>
+                                  </td>
+                                  <td>—</td>
+                                </tr>
+                              )
+                            })}
+                          </>
+                        ) : null}
+                      </>
                     )}
                   </tbody>
                   <tfoot>
@@ -1254,7 +1487,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                       <td />
                       <td />
                       <td className="foot-gr">{formatMoneyGBP(thisWeekCertificate)}</td>
-                      <td className="foot-claimed">{formatMoneyGBP(certificatesPaidTotal)}</td>
+                      <td className="foot-claimed">{formatMoneyGBP(totalClaimedDisplay)}</td>
                       <td className="foot-rd">{formatMoneyGBP(totalBalanceLeft)}</td>
                       <td className="foot-split">
                         <div className="split-bar-wrap foot-total-bar">
@@ -3046,6 +3279,16 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     useState(0)
   const [programmeImpactLoading, setProgrammeImpactLoading] = useState(true)
   const [programmeImpactError, setProgrammeImpactError] = useState('')
+  const [approvedProgrammeVOs, setApprovedProgrammeVOs] = useState<
+    {
+      id: string
+      voNumber: string
+      description: string
+      trade: string
+      value: number
+      progDays: number
+    }[]
+  >([])
 
   useEffect(() => {
     let cancelled = false
@@ -3058,7 +3301,9 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
           .eq('project_id', project.id),
         supabase
           .from('variations')
-          .select('prog_days, status')
+          .select(
+            'id, vo_number, description, trade, value, prog_days, status',
+          )
           .eq('project_id', project.id),
       ])
       if (cancelled) return
@@ -3085,6 +3330,21 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
       }
       setProgrammeVariationDays(vSum)
       setProgrammeApprovedVariationsCount(vCount)
+      const approved = (varsRes.data ?? []).filter(
+        (row) =>
+          String((row as Record<string, unknown>).status ?? '').toLowerCase() ===
+          'approved',
+      ) as Record<string, unknown>[]
+      setApprovedProgrammeVOs(
+        approved.map((row) => ({
+          id: String(row.id ?? ''),
+          voNumber: String(row.vo_number ?? '').trim() || 'VO',
+          description: String(row.description ?? ''),
+          trade: String(row.trade ?? '—'),
+          value: Number(row.value ?? 0),
+          progDays: Math.max(0, Number(row.prog_days ?? 0)),
+        })),
+      )
       setProgrammeImpactLoading(false)
     }
     void loadProgrammeImpact()
@@ -3418,6 +3678,36 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                 })}
               </div>
             ))}
+            {approvedProgrammeVOs.length > 0 ? (
+              <div key="gantt-variation-labels">
+                <div className="gantt-label-row phase">
+                  <span className="phase-text">VARIATIONS</span>
+                </div>
+                {approvedProgrammeVOs.map((v) => (
+                  <div key={`vo-lbl-${v.id}`} className="gantt-label-row">
+                    <span
+                      className="label-type"
+                      style={{
+                        background: 'rgba(156,39,176,0.22)',
+                        color: '#F3E5F5',
+                        border: '1px solid #9C27B0',
+                      }}
+                    >
+                      V
+                    </span>
+                    <span className="label-name" title={v.description}>
+                      {v.voNumber} · {v.description}
+                    </span>
+                    <span
+                      className="mono-xs"
+                      style={{ color: '#CE93D8', marginLeft: 6, flexShrink: 0 }}
+                    >
+                      {v.trade}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </div>
 
           <div className="gantt-chart">
@@ -3512,6 +3802,40 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                   })}
                 </div>
               ))}
+              {approvedProgrammeVOs.length > 0 ? (
+                <div key="gantt-variation-bars">
+                  <div className="chart-row phase-row" />
+                  {approvedProgrammeVOs.map((v) => {
+                    const denom = Math.max(1, weekMeta.length)
+                    const spanWeeks = Math.max(1, Math.ceil(v.progDays / 5))
+                    const left =
+                      Math.max(0, ((todayWeek - minWeek) / denom) * 100)
+                    const width = Math.min(100, (spanWeeks / denom) * 100)
+                    return (
+                      <div key={`bar-vo-${v.id}`} className="chart-row">
+                        <div
+                          className="gbar"
+                          style={{
+                            left: `${left}%`,
+                            width: `${width}%`,
+                            background: 'rgba(156,39,176,0.35)',
+                            border: '1px solid #9C27B0',
+                          }}
+                        />
+                        <div
+                          className="gbar-text"
+                          style={{
+                            left: `calc(${left}% + 6px)`,
+                            color: '#E1BEE7',
+                          }}
+                        >
+                          {v.progDays}d
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -4164,13 +4488,7 @@ function utcMillisFromIsoDate(iso: string | null | undefined): number | null {
   return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
 }
 
-/** Approximate Mon–Fri days from a calendar-day count when no span start is known. */
-function calendarDaysToApproxWorkingDays(calendarDays: number): number {
-  if (calendarDays <= 0) return 0
-  return Math.round((calendarDays * 5) / 7)
-}
-
-/** Delays table: weeks → working days (5 per week); days → approx working from calendar length. */
+/** Delays table: unit days → duration as Mon–Fri days; weeks → duration × 5 working days. */
 function delayRecordToWorkingDays(row: {
   duration?: unknown
   unit?: unknown
@@ -4178,7 +4496,7 @@ function delayRecordToWorkingDays(row: {
   const duration = Math.max(0, Number(row.duration ?? 0))
   const unit = String(row.unit ?? 'days').toLowerCase()
   if (unit === 'weeks') return Math.round(duration * 5)
-  return calendarDaysToApproxWorkingDays(duration)
+  return duration
 }
 
 /** Advance UTC midnight by N weekdays (skips Saturday and Sunday). */
@@ -4432,17 +4750,24 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       )
       setCertificates((certsRes.data ?? []) as CertificateRecord[])
       setDelayLogs(
-        ((delaysRes.data ?? []) as Record<string, unknown>[]).map((d) => ({
-          id: String(d.id ?? crypto.randomUUID()),
-          startWeek: Number(d.start_week ?? 1),
-          days:
-            String(d.unit ?? 'days') === 'weeks'
-              ? Number(d.duration ?? 0) * 7
-              : Number(d.duration ?? d.days_lost ?? 0),
-          reason: String(d.reason ?? 'Other'),
-          notes: String(d.notes ?? ''),
-          dateLogged: String(d.date_logged ?? ''),
-        })),
+        ((delaysRes.data ?? []) as Record<string, unknown>[]).map((d) => {
+          const duration = Number(d.duration ?? d.days_lost ?? 0)
+          const unit = String(d.unit ?? 'days')
+          const calendarDays =
+            unit === 'weeks' ? duration * 7 : Number(d.duration ?? d.days_lost ?? 0)
+          return {
+            id: String(d.id ?? crypto.randomUUID()),
+            startWeek: Number(d.start_week ?? 1),
+            days: calendarDays,
+            workingDays: delayRecordToWorkingDays({
+              duration: d.duration,
+              unit: d.unit,
+            }),
+            reason: String(d.reason ?? 'Other'),
+            notes: String(d.notes ?? ''),
+            dateLogged: String(d.date_logged ?? ''),
+          }
+        }),
       )
       setVariationRows(
         ((varsRes.data ?? []) as Record<string, unknown>[]).map((v, idx) => ({
@@ -4647,11 +4972,6 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     [project.start_date, project.handover_date],
   )
 
-  const handoverWeeks = useMemo(
-    () => weeksUntilHandover(project.handover_date),
-    [project.handover_date],
-  )
-
   const originalContract = project.contract_value
   const lockedItems = project.locked_items_count ?? 0
 
@@ -4682,6 +5002,34 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         .reduce((s, r) => s + num(r.amount_due), 0)
     : 0
 
+  const totalHandoverWorkingShift = useMemo(() => {
+    const delayW = delayLogs.reduce((s, d) => s + (d.workingDays ?? 0), 0)
+    const varProg = variationRows
+      .filter((v) => v.status === 'approved')
+      .reduce((s, v) => s + v.programmeDays, 0)
+    return delayW + varProg
+  }, [delayLogs, variationRows])
+
+  const totalDelayDays = useMemo(
+    () => delayLogs.reduce((s, d) => s + (d.workingDays ?? 0), 0),
+    [delayLogs],
+  )
+  const totalDelayWeeks = Math.round((totalDelayDays / 5) * 10) / 10
+  const originalHandoverMs = utcMillisFromIsoDate(project.handover_date)
+  const revisedHandoverIso = useMemo(() => {
+    if (originalHandoverMs == null) return null
+    return new Date(
+      addUtcWorkingDays(originalHandoverMs, totalHandoverWorkingShift),
+    )
+      .toISOString()
+      .slice(0, 10)
+  }, [originalHandoverMs, totalHandoverWorkingShift])
+
+  const handoverWeeks = useMemo(
+    () => weeksUntilHandover(revisedHandoverIso ?? project.handover_date),
+    [revisedHandoverIso, project.handover_date],
+  )
+
   const handoverStat =
     handoverWeeks.weeks == null
       ? '—'
@@ -4689,23 +5037,12 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         ? '0 (overdue)'
         : String(handoverWeeks.weeks)
 
-  const totalDelayDays = useMemo(
-    () => delayLogs.reduce((s, d) => s + d.days, 0),
-    [delayLogs],
-  )
-  const totalDelayWeeks = Math.round((totalDelayDays / 7) * 10) / 10
-  const originalHandoverMs = utcMillisFromIsoDate(project.handover_date)
-  const revisedHandoverMs =
-    originalHandoverMs != null ? originalHandoverMs + totalDelayDays * 86400000 : null
-  const revisedHandoverIso =
-    revisedHandoverMs != null ? new Date(revisedHandoverMs).toISOString().slice(0, 10) : null
-
   const revisedContractWithVars =
     (project.contract_value != null ? num(project.contract_value) : 0) + variationTotal
 
   const delayPreviewBase = Math.max(1, parseInt(delayDaysInput || '1', 10))
   const delayPreviewDays =
-    delayUnit === 'weeks' ? delayPreviewBase * 7 : delayPreviewBase
+    delayUnit === 'weeks' ? delayPreviewBase * 5 : delayPreviewBase
 
   function fmtPortalDate(iso: string | null | undefined) {
     if (!iso) return '—'
@@ -4790,15 +5127,20 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     console.log('[delays] insert success', data)
     const inserted = data as Record<string, unknown> | null
     if (inserted) {
+      const calDays =
+        String(inserted.unit ?? delayUnit) === 'weeks'
+          ? Number(inserted.duration ?? raw) * 7
+          : Number(inserted.duration ?? inserted.days_lost ?? days)
       setDelayLogs((prev) => [
         ...prev,
         {
           id: String(inserted.id ?? crypto.randomUUID()),
           startWeek: Number(inserted.start_week ?? startW),
-          days:
-            String(inserted.unit ?? delayUnit) === 'weeks'
-              ? Number(inserted.duration ?? raw) * 7
-              : Number(inserted.duration ?? inserted.days_lost ?? days),
+          days: calDays,
+          workingDays: delayRecordToWorkingDays({
+            duration: inserted.duration,
+            unit: inserted.unit,
+          }),
           reason: String(inserted.reason ?? delayReasonInput),
           notes: String(inserted.notes ?? delayNotesInput.trim()),
           dateLogged: String(inserted.date_logged ?? payload.date_logged),
@@ -5416,6 +5758,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
             <div style={{ background: 'rgba(255,61,87,.05)', border: '1px solid rgba(255,61,87,.2)', borderRadius: 10, padding: '14px 16px', marginBottom: 10 }}>
               <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', marginBottom: 4 }}>DAYS LOST</div>
               <div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 32, color: '#FF3D57' }}>{totalDelayDays}</div>
+              <div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', marginTop: 4 }}>Working days (Mon–Fri)</div>
             </div>
             <div style={{ background: 'rgba(0,230,118,.07)', border: '1px solid rgba(0,230,118,.2)', borderRadius: 9, padding: '9px 13px', marginBottom: 10, fontSize: 12, color: '#00E676', display: 'flex', gap: 8 }}>
               <span>✅</span>
@@ -5424,13 +5767,13 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
             <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 10, overflow: 'hidden' }}>
               <div style={{ padding: '10px 12px', borderBottom: `1px solid ${border}`, fontFamily: 'Bebas Neue, sans-serif', letterSpacing: 2 }}>DELAY LOG</div>
               <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                <thead><tr><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>DATE</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>REASON</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>DAYS</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>IMPACT</th><th style={{ padding: '8px 10px' }} /></tr></thead>
+                <thead><tr><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>DATE</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>REASON</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>WD</th><th style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B', textAlign: 'left' }}>IMPACT</th><th style={{ padding: '8px 10px' }} /></tr></thead>
                 <tbody>
                   {delayLogs.length === 0 ? <tr><td colSpan={5} style={{ padding: '10px', color: '#64748B', fontFamily: 'DM Mono, monospace', fontSize: 10 }}>No delays logged yet.</td></tr> : delayLogs.map((d) => (
                     <tr key={d.id}>
                       <td style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 10 }}>{fmtPortalDate(d.dateLogged)}</td>
                       <td style={{ padding: '8px 10px', fontSize: 11 }}>{d.reason}</td>
-                      <td style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#FF3D57' }}>{d.days}</td>
+                      <td style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11, color: '#FF3D57' }}>{d.workingDays}</td>
                       <td style={{ padding: '8px 10px', fontFamily: 'DM Mono, monospace', fontSize: 10, color: '#64748B' }}>Wk {d.startWeek}</td>
                       <td style={{ padding: '8px 10px' }}><button type="button" onClick={() => void removeDelayLog(d.id)} style={{ border: '1px solid rgba(255,61,87,.3)', background: 'transparent', color: '#FF3D57', borderRadius: 4, fontSize: 10, padding: '2px 6px' }}>✕</button></td>
                     </tr>
