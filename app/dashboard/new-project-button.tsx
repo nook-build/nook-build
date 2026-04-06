@@ -5,6 +5,10 @@ import { useState } from 'react'
 import { supabase } from '@/lib/supabase'
 
 const accent = '#F4A623'
+const bg = '#0A0C10'
+const surface = '#0F1219'
+const border = '#1E2535'
+const warning = '#FF3D57'
 
 export function NewProjectButton() {
   const router = useRouter()
@@ -66,7 +70,8 @@ export function NewProjectButton() {
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-black shadow-lg transition hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F4A623] focus-visible:ring-offset-2 focus-visible:ring-offset-[#080A0F]"
+        className="inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-semibold text-black shadow-lg transition hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F4A623] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0A0C10]"
+        aria-label="Create new project"
         style={{ backgroundColor: accent }}
       >
         <span className="text-lg leading-none">+</span>
@@ -92,8 +97,8 @@ export function NewProjectButton() {
             }}
           />
           <div
-            className="relative w-full max-w-md rounded-xl border border-[#1E2535] p-6 shadow-2xl"
-            style={{ backgroundColor: '#0F1219' }}
+            className="relative w-full max-w-md rounded-xl border p-6 shadow-2xl"
+            style={{ backgroundColor: surface, borderColor: border }}
             onClick={(e) => e.stopPropagation()}
           >
             <h2
@@ -121,7 +126,8 @@ export function NewProjectButton() {
                   value={name}
                   onChange={(e) => setName(e.target.value)}
                   placeholder="e.g. Riverside extension"
-                  className="w-full rounded-lg border border-[#1E2535] bg-[#080A0F] px-3 py-2.5 text-sm text-[#E2E8F8] outline-none placeholder:text-[#475569] focus:border-[#F4A623]/50"
+                  className="w-full rounded-lg border px-3 py-2.5 text-sm text-[#E2E8F8] outline-none placeholder:text-[#475569]"
+                  style={{ borderColor: border, backgroundColor: bg }}
                 />
               </div>
               <div>
@@ -136,7 +142,8 @@ export function NewProjectButton() {
                   value={address}
                   onChange={(e) => setAddress(e.target.value)}
                   placeholder="Street, city, postcode"
-                  className="w-full rounded-lg border border-[#1E2535] bg-[#080A0F] px-3 py-2.5 text-sm text-[#E2E8F8] outline-none placeholder:text-[#475569] focus:border-[#F4A623]/50"
+                  className="w-full rounded-lg border px-3 py-2.5 text-sm text-[#E2E8F8] outline-none placeholder:text-[#475569]"
+                  style={{ borderColor: border, backgroundColor: bg }}
                 />
               </div>
               <div>
@@ -154,7 +161,8 @@ export function NewProjectButton() {
                   value={contractValue}
                   onChange={(e) => setContractValue(e.target.value)}
                   placeholder="0.00"
-                  className="w-full rounded-lg border border-[#1E2535] bg-[#080A0F] px-3 py-2.5 text-sm text-[#E2E8F8] outline-none placeholder:text-[#475569] focus:border-[#F4A623]/50"
+                  className="w-full rounded-lg border px-3 py-2.5 text-sm text-[#E2E8F8] outline-none placeholder:text-[#475569]"
+                  style={{ borderColor: border, backgroundColor: bg }}
                 />
               </div>
               <div>
@@ -170,12 +178,13 @@ export function NewProjectButton() {
                   value={startDate}
                   onChange={(e) => setStartDate(e.target.value)}
                   required
-                  className="w-full rounded-lg border border-[#1E2535] bg-[#080A0F] px-3 py-2.5 text-sm text-[#E2E8F8] outline-none focus:border-[#F4A623]/50 [color-scheme:dark]"
+                  className="w-full rounded-lg border px-3 py-2.5 text-sm text-[#E2E8F8] outline-none [color-scheme:dark]"
+                  style={{ borderColor: border, backgroundColor: bg }}
                 />
               </div>
 
               {formError ? (
-                <p className="text-sm text-red-400" role="alert">
+                <p className="text-sm" style={{ color: warning }} role="alert">
                   {formError}
                 </p>
               ) : null}

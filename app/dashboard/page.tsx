@@ -8,7 +8,10 @@ import { NewProjectButton } from './new-project-button'
 import { ProjectTableRow } from './project-table-row'
 
 const accent = '#F4A623'
-const bg = '#080A0F'
+const green = '#00E676'
+const blue = '#3B8BFF'
+const warning = '#FF3D57'
+const bg = '#0A0C10'
 const surface = '#0F1219'
 const border = '#1E2535'
 
@@ -90,7 +93,12 @@ export default async function DashboardPage() {
       <main className="relative mx-auto max-w-6xl px-5 py-8 sm:px-8">
         {error ? (
           <div
-            className="rounded-xl border border-red-900/40 bg-red-950/25 px-4 py-3 text-sm text-red-200"
+            className="rounded-xl border px-4 py-3 text-sm"
+            style={{
+              borderColor: `${warning}66`,
+              backgroundColor: `${warning}1A`,
+              color: '#E2E8F8',
+            }}
             role="alert"
           >
             Could not load projects: {error.message}
@@ -102,19 +110,19 @@ export default async function DashboardPage() {
                 label="Total projects"
                 value={String(totalProjects)}
                 hint="In portfolio"
-                accent={false}
+                valueColor={accent}
               />
               <StatCard
                 label="Active sites"
                 value={String(activeProjects)}
                 hint="Status: active"
-                accent
+                valueColor={green}
               />
               <StatCard
                 label="Total contract value"
                 value={formatMoneyGBP(totalValue)}
                 hint="Sum of recorded values"
-                accent={false}
+                valueColor={blue}
                 valueLarge
               />
             </section>
@@ -220,13 +228,13 @@ function StatCard({
   label,
   value,
   hint,
-  accent: useAccent,
+  valueColor,
   valueLarge,
 }: {
   label: string
   value: string
   hint: string
-  accent?: boolean
+  valueColor: string
   valueLarge?: boolean
 }) {
   return (
@@ -237,17 +245,15 @@ function StatCard({
       <div
         className="absolute left-0 top-0 h-0.5 w-full opacity-90"
         style={{
-          background: useAccent
-            ? `linear-gradient(90deg, ${accent}, transparent)`
-            : `linear-gradient(90deg, ${border}, ${border})`,
+          background: `linear-gradient(90deg, ${valueColor}, transparent)`,
         }}
       />
       <p className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
         {label}
       </p>
       <p
-        className={`mt-2 font-semibold tracking-tight text-[#F8FAFC] ${valueLarge ? 'text-2xl sm:text-3xl' : 'text-2xl'}`}
-        style={useAccent ? { color: accent } : undefined}
+        className={`mt-2 font-bold tracking-tight ${valueLarge ? 'text-3xl sm:text-4xl' : 'text-3xl'}`}
+        style={{ color: valueColor }}
       >
         {value}
       </p>
@@ -263,9 +269,18 @@ function StatusPill({ status }: { status: string | null }) {
     <span
       className={`inline-flex rounded-md border px-2.5 py-1 text-xs font-medium uppercase tracking-wide ${
         active
-          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-          : 'border-[#1E2535] bg-[#080A0F] text-[#94A3B8]'
+          ? ''
+          : 'border-[#1E2535] bg-[#0A0C10] text-[#94A3B8]'
       }`}
+      style={
+        active
+          ? {
+              borderColor: '#00E67666',
+              backgroundColor: '#00E6761A',
+              color: '#00E676',
+            }
+          : undefined
+      }
     >
       {status ?? '—'}
     </span>
