@@ -4261,8 +4261,9 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const [bcInspector, setBcInspector] = useState('')
   const [bcResult, setBcResult] = useState<'pass' | 'fail' | 'advisory'>('pass')
   const [bcNotes, setBcNotes] = useState('')
-  const [overviewApprovedVariationsSum, setOverviewApprovedVariationsSum] =
-    useState<number | null>(null)
+  const [overviewVariationsSum, setOverviewVariationsSum] = useState<
+    number | null
+  >(null)
   const [overviewVariationsLoading, setOverviewVariationsLoading] =
     useState(false)
 
@@ -4357,17 +4358,16 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   useEffect(() => {
     if (activeTab !== 'overview') return
     let cancelled = false
-    async function loadApprovedVariationsTotal() {
+    async function loadOverviewVariationsTotal() {
       setOverviewVariationsLoading(true)
       const { data, error } = await supabase
         .from('variations')
         .select('value')
         .eq('project_id', project.id)
-        .eq('status', 'approved')
       if (cancelled) return
       if (error) {
         setLoadError((prev) => (prev ? `${prev} · ${error.message}` : error.message))
-        setOverviewApprovedVariationsSum(0)
+        setOverviewVariationsSum(0)
         setOverviewVariationsLoading(false)
         return
       }
@@ -4376,10 +4376,10 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           s + num(row.value),
         0,
       )
-      setOverviewApprovedVariationsSum(sum)
+      setOverviewVariationsSum(sum)
       setOverviewVariationsLoading(false)
     }
-    void loadApprovedVariationsTotal()
+    void loadOverviewVariationsTotal()
     return () => {
       cancelled = true
     }
@@ -4502,9 +4502,9 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
 
   const overviewRevisedContract = useMemo(() => {
     if (project.contract_value == null) return null
-    if (overviewApprovedVariationsSum == null) return null
-    return num(project.contract_value) + overviewApprovedVariationsSum
-  }, [project.contract_value, overviewApprovedVariationsSum])
+    if (overviewVariationsSum == null) return null
+    return num(project.contract_value) + overviewVariationsSum
+  }, [project.contract_value, overviewVariationsSum])
 
   const overviewRemaining =
     overviewRevisedContract != null && overviewRevisedContract > 0
@@ -5045,10 +5045,10 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           )}
         </div>
         <div className="panel-lite">
-          <div className="pl-head">LIVE PROJECT SUMMARY</div>
+          <div className="pl-head">PROJECT SUMMARY</div>
           <div className="summary-row"><span>Original contract</span><strong>{originalContract != null ? formatMoneyGBP(num(originalContract)) : '—'}</strong></div>
-          <div className="summary-row"><span>Variations total</span><strong>{overviewVariationsLoading ? '…' : formatSignedMoneyGBP(overviewApprovedVariationsSum ?? 0)}</strong></div>
-          <div className="summary-row"><span>Revised contract value</span><strong>{overviewVariationsLoading ? '…' : overviewRevisedContract != null ? formatMoneyGBP(overviewRevisedContract) : '—'}</strong></div>
+          <div className="summary-row"><span>VARIATIONS TOTAL</span><strong>{overviewVariationsLoading ? '…' : formatSignedMoneyGBP(overviewVariationsSum ?? 0)}</strong></div>
+          <div className="summary-row"><span>REVISED CONTRACT VALUE</span><strong>{overviewVariationsLoading ? '…' : overviewRevisedContract != null ? formatMoneyGBP(overviewRevisedContract) : '—'}</strong></div>
           <div className="summary-row no-b"><span>Total delays</span><strong>{`${totalDelayDays} day${totalDelayDays === 1 ? '' : 's'}`}</strong></div>
         </div>
       </div>
