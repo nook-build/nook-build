@@ -268,6 +268,42 @@ function weekOptionsFromRows(rows: ValuationRecord[]): string[] {
     .map(([w]) => w)
 }
 
+/** One valuation period (week_label) with summed certificate and sort key. */
+function valuationPeriodsSorted(rows: ValuationRecord[]) {
+  const byLabel = new Map<
+    string,
+    { cert: number; minCreated: number }
+  >()
+  for (const r of rows) {
+    const prev = byLabel.get(r.week_label)
+    const cert = num(r.amount_due)
+    const created = r.created_at ? Date.parse(r.created_at) : NaN
+    if (!prev) {
+      byLabel.set(r.week_label, {
+        cert,
+        minCreated: Number.isFinite(created) ? created : 0,
+      })
+    } else {
+      byLabel.set(r.week_label, {
+        cert: prev.cert + cert,
+        minCreated: Number.isFinite(created)
+          ? Math.min(prev.minCreated, created)
+          : prev.minCreated,
+      })
+    }
+  }
+  return [...byLabel.entries()]
+    .map(([week_label, v]) => ({
+      week_label,
+      weekCert: v.cert,
+      minCreated: v.minCreated,
+    }))
+    .sort((a, b) => {
+      if (a.minCreated !== b.minCreated) return a.minCreated - b.minCreated
+      return a.week_label.localeCompare(b.week_label)
+    })
+}
+
 function weightedValuePercent(
   list: ValuationRecord[],
   getPct: (r: ValuationRecord) => number | null,
@@ -1411,10 +1447,221 @@ function normalizeProgrammeItem(
   }
 }
 
+type ProgrammeScurveCanvasProps = {
+  contract: number
+  projectStartMs: number
+  timelineEndMs: number
+  /** UTC ms at start of each programme week (same order as Gantt). */
+  weekMetaMs: number[]
+  actualByPeriod: { dateMs: number; cumulative: number }[]
+}
+
+function ProgrammeScurveCanvas({
+  contract,
+  projectStartMs,
+  timelineEndMs,
+  weekMetaMs,
+  actualByPeriod,
+}: ProgrammeScurveCanvasProps) {
+  const wrapRef = useRef<HTMLDivElement>(null)
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+  const [canvasWidth, setCanvasWidth] = useState(800)
+
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      const w = el.getBoundingClientRect().width
+      setCanvasWidth(Math.max(400, Math.floor(w)))
+    })
+    ro.observe(el)
+    setCanvasWidth(Math.max(400, Math.floor(el.getBoundingClientRect().width)))
+    return () => ro.disconnect()
+  }, [])
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const dpr = typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1
+    const W = canvasWidth
+    const H = 220
+    canvas.width = W * dpr
+    canvas.height = H * dpr
+    canvas.style.width = `${W}px`
+    canvas.style.height = `${H}px`
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.scale(dpr, dpr)
+
+    const pad = { t: 16, r: 16, b: 40, l: 60 }
+    const cw = W - pad.l - pad.r
+    const ch = H - pad.t - pad.b
+    const ps = projectStartMs
+    const pe = Math.max(timelineEndMs, projectStartMs + 86400000)
+    const totalMs = pe - ps
+
+    ctx.clearRect(0, 0, W, H)
+
+    function dateX(ms: number) {
+      const x = pad.l + ((ms - ps) / totalMs) * cw
+      return Math.max(pad.l, Math.min(W - pad.r, x))
+    }
+
+    const maxV = contract > 0 ? contract : 1
+
+    for (let i = 0; i <= 4; i += 1) {
+      const y = pad.t + ch * (1 - i / 4)
+      ctx.strokeStyle = 'rgba(30,37,53,.9)'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(pad.l, y)
+      ctx.lineTo(W - pad.r, y)
+      ctx.stroke()
+      ctx.fillStyle = '#4A5568'
+      ctx.font = '9px DM Mono, monospace'
+      ctx.textAlign = 'right'
+      const tickVal = (contract * i) / 4
+      const tickLabel =
+        contract <= 0
+          ? i === 0
+            ? '£0'
+            : ''
+          : contract >= 1000
+            ? `£${Math.round(tickVal / 1000)}k`
+            : formatMoneyGBP(Math.round(tickVal))
+      ctx.fillText(tickLabel, pad.l - 5, y + 3)
+    }
+
+    const span = Math.max(1, weekMetaMs.length - 1)
+    for (let i = 0; i < weekMetaMs.length; i += 1) {
+      const x = dateX(weekMetaMs[i])
+      if (x < pad.l || x > W - pad.r) continue
+      ctx.strokeStyle = 'rgba(30,37,53,.8)'
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(x, pad.t)
+      ctx.lineTo(x, H - pad.b)
+      ctx.stroke()
+    }
+
+    const s0 = 1 / (1 + Math.exp(5))
+    const s1 = 1 / (1 + Math.exp(-5))
+    const planPts: { x: number; y: number }[] = []
+    for (let w = 0; w <= span; w += 1) {
+      const t = span > 0 ? w / span : 0
+      const s = 1 / (1 + Math.exp(-10 * (t - 0.5)))
+      const v = ((s - s0) / (s1 - s0)) * maxV
+      const idx = Math.min(w, Math.max(0, weekMetaMs.length - 1))
+      const dMs = weekMetaMs[idx]
+      planPts.push({
+        x: dateX(dMs),
+        y: pad.t + ch * (1 - v / maxV),
+      })
+    }
+    ctx.strokeStyle = 'rgba(59,139,255,.35)'
+    ctx.lineWidth = 3
+    ctx.setLineDash([5, 4])
+    ctx.beginPath()
+    planPts.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(p.x, p.y)
+      else ctx.lineTo(p.x, p.y)
+    })
+    ctx.stroke()
+    ctx.setLineDash([])
+
+    const actPts = actualByPeriod.map((p) => ({
+      x: dateX(p.dateMs),
+      y: pad.t + ch * (1 - p.cumulative / maxV),
+      v: p.cumulative,
+    }))
+    const hasActual = actPts.some((p) => p.v > 0)
+    if (hasActual) {
+      const positive = actPts.filter((p) => p.v > 0)
+      ctx.beginPath()
+      const first = positive[0]
+      if (first) {
+        ctx.moveTo(first.x, H - pad.b)
+        positive.forEach((p) => ctx.lineTo(p.x, p.y))
+        const last = positive[positive.length - 1]
+        ctx.lineTo(last.x, H - pad.b)
+        ctx.closePath()
+        ctx.fillStyle = 'rgba(244,166,35,.07)'
+        ctx.fill()
+      }
+      ctx.strokeStyle = '#F4A623'
+      ctx.lineWidth = 4
+      ctx.beginPath()
+      let started = false
+      positive.forEach((p) => {
+        if (!started) {
+          ctx.moveTo(p.x, p.y)
+          started = true
+        } else ctx.lineTo(p.x, p.y)
+      })
+      ctx.stroke()
+
+      positive.forEach((p) => {
+        ctx.beginPath()
+        ctx.arc(p.x, p.y, 4.5, 0, Math.PI * 2)
+        ctx.fillStyle = '#00E676'
+        ctx.fill()
+        ctx.strokeStyle = 'rgba(0,0,0,.5)'
+        ctx.lineWidth = 1
+        ctx.stroke()
+      })
+    }
+
+    const todayMs = todayUtcMidnightMs()
+    const todayX = dateX(todayMs)
+    ctx.strokeStyle = '#FF3D57'
+    ctx.lineWidth = 2
+    ctx.setLineDash([4, 3])
+    ctx.beginPath()
+    ctx.moveTo(todayX, pad.t)
+    ctx.lineTo(todayX, H - pad.b)
+    ctx.stroke()
+    ctx.setLineDash([])
+    ctx.fillStyle = '#FF3D57'
+    ctx.font = '9px DM Mono, monospace'
+    ctx.textAlign = 'center'
+    ctx.fillText('TODAY', todayX, pad.t - 2)
+
+    const ly = H - pad.b + 18
+    ctx.fillStyle = 'rgba(59,139,255,.4)'
+    ctx.fillRect(pad.l, ly, 16, 3)
+    ctx.fillStyle = '#4A5568'
+    ctx.font = '9px DM Mono, monospace'
+    ctx.textAlign = 'left'
+    ctx.fillText('Planned S-curve', pad.l + 20, ly + 5)
+    ctx.fillStyle = '#F4A623'
+    ctx.fillRect(pad.l + 118, ly, 16, 3)
+    ctx.fillText('Actual drawdown', pad.l + 138, ly + 5)
+    ctx.fillStyle = '#FF3D57'
+    ctx.fillRect(pad.l + 252, ly, 16, 3)
+    ctx.fillText('Today', pad.l + 272, ly + 5)
+  }, [
+    canvasWidth,
+    contract,
+    projectStartMs,
+    timelineEndMs,
+    weekMetaMs,
+    actualByPeriod,
+  ])
+
+  return (
+    <div ref={wrapRef} className="relative h-[220px] w-full">
+      <canvas ref={canvasRef} className="block h-[220px] w-full" />
+    </div>
+  )
+}
+
 function ProgrammeTab({ project }: { project: ProjectDetail }) {
   const [rows, setRows] = useState<ProgrammeSeed[]>(PROGRAMME_SEED)
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
+  const [valuationRows, setValuationRows] = useState<ValuationRecord[]>([])
+  const [valuationLoadError, setValuationLoadError] = useState('')
 
   useEffect(() => {
     let cancelled = false
@@ -1441,6 +1688,29 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
       setLoading(false)
     }
     void load()
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadValuations() {
+      setValuationLoadError('')
+      const { data, error } = await supabase
+        .from('valuations')
+        .select('*')
+        .eq('project_id', project.id)
+        .order('line_order', { ascending: true })
+      if (cancelled) return
+      if (error) {
+        setValuationLoadError(error.message)
+        setValuationRows([])
+      } else {
+        setValuationRows((data ?? []) as ValuationRecord[])
+      }
+    }
+    void loadValuations()
     return () => {
       cancelled = true
     }
@@ -1530,22 +1800,94 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     return formatIsoDateOnly(new Date(shifted).toISOString())
   }, [project.handover_date, totalProgrammeShift])
 
+  const valuationWeekOpts = useMemo(
+    () => weekOptionsFromRows(valuationRows),
+    [valuationRows],
+  )
 
-  const sCurve = useMemo(() => {
-    const points = weekRange.map((w) => {
-      const total = rows.length || 1
-      const plannedDone = rows.filter((r) => r.end_week <= w).length
-      const actualDone = rows.filter(
-        (r) => r.percent_complete >= 100 && r.end_week <= w,
-      ).length
+  const latestValuationRows = useMemo(() => {
+    const latest = valuationWeekOpts[0]
+    if (!latest) return []
+    return valuationRows
+      .filter((r) => r.week_label === latest)
+      .sort((a, b) => a.line_order - b.line_order)
+  }, [valuationRows, valuationWeekOpts])
+
+  const contractSum = useMemo(() => {
+    const lineSum = latestValuationRows.reduce((s, r) => s + num(r.contract_value), 0)
+    const projectCv =
+      project.contract_value != null ? num(project.contract_value) : 0
+    if (projectCv > 0) return projectCv
+    if (lineSum > 0) return lineSum
+    return 0
+  }, [latestValuationRows, project.contract_value])
+
+  const revisedContract = useMemo(
+    () => (contractSum > 0 ? contractSum + num(project.variations_total) : 0),
+    [contractSum, project.variations_total],
+  )
+
+  const valuationPeriods = useMemo(
+    () => valuationPeriodsSorted(valuationRows),
+    [valuationRows],
+  )
+
+  const actualByPeriod = useMemo(() => {
+    let cumul = 0
+    return valuationPeriods.map((p) => {
+      cumul += p.weekCert
       return {
-        week: w,
-        planned: (plannedDone / total) * 100,
-        actual: (actualDone / total) * 100,
+        dateMs: p.minCreated,
+        cumulative: cumul,
       }
     })
-    return points
-  }, [rows, weekRange])
+  }, [valuationPeriods])
+
+  const totalCertified = useMemo(
+    () => valuationRows.reduce((s, r) => s + num(r.amount_due), 0),
+    [valuationRows],
+  )
+
+  const scurveContract = revisedContract > 0 ? revisedContract : contractSum
+
+  const weekMetaMs = useMemo(
+    () => weekMeta.map((w) => w.date.getTime()),
+    [weekMeta],
+  )
+
+  const timelineEndMs = useMemo(() => {
+    const handover = utcMillisFromIsoDate(project.handover_date)
+    const shifted =
+      handover != null
+        ? handover + totalProgrammeShift * 86400000 + 14 * 86400000
+        : null
+    const programmeEnd =
+      weekMeta.length > 0
+        ? projectStartMs + (maxWeek - minWeek + 1) * 7 * 86400000
+        : projectStartMs + 18 * 7 * 86400000
+    const lastPeriod =
+      valuationPeriods.length > 0
+        ? Math.max(...valuationPeriods.map((p) => p.minCreated))
+        : 0
+    const lastWeekMs =
+      weekMetaMs.length > 0 ? weekMetaMs[weekMetaMs.length - 1] : programmeEnd
+    return Math.max(
+      shifted ?? programmeEnd,
+      programmeEnd,
+      lastWeekMs,
+      lastPeriod,
+      projectStartMs + 7 * 86400000,
+    )
+  }, [
+    project.handover_date,
+    projectStartMs,
+    totalProgrammeShift,
+    weekMeta.length,
+    maxWeek,
+    minWeek,
+    valuationPeriods,
+    weekMetaMs,
+  ])
 
   function barTone(color: string) {
     const c = color.toUpperCase()
@@ -1557,6 +1899,26 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     if (c === '#00BCD4') return { bg: 'rgba(0,191,165,.18)', border: 'rgba(0,191,165,.4)', prog: '#00BFA5', text: '#00BFA5' }
     return { bg: 'rgba(100,110,130,.35)', border: 'rgba(100,110,130,.55)', prog: '#8899AA', text: '#8899AA' }
   }
+
+  const tradeLegend = useMemo(() => {
+    const seen = new Set<string>()
+    const out: { label: string; bg: string; border: string }[] = []
+    for (const [phase, items] of grouped) {
+      const first = items[0]
+      if (!first || seen.has(phase)) continue
+      seen.add(phase)
+      const tone = barTone(first.colour)
+      out.push({ label: phase, bg: tone.bg, border: tone.border })
+    }
+    return out
+  }, [grouped])
+
+  const drawnLabel =
+    scurveContract > 0 ? formatMoneyGBP(totalCertified) : '—'
+  const remainingLabel =
+    scurveContract > 0
+      ? formatMoneyGBP(Math.max(0, scurveContract - totalCertified))
+      : '—'
 
   return (
     <div className="pg" id="pg-programme">
@@ -1740,47 +2102,46 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
           <div className="scurve-label">
             <div className="sc-ttl">S-CURVE</div>
             <div className="sc-sub">Cashflow drawdown</div>
+            <div className="sc-drawn-block">
+              <div className="sc-lbl">Drawn</div>
+              <div className="sc-drawn-val">{drawnLabel}</div>
+              <div className="sc-lbl sc-lbl-mt">Remaining</div>
+              <div className="sc-remain-val">{remainingLabel}</div>
+            </div>
           </div>
           <div className="scurve-canvas-wrap">
-            <svg viewBox="0 0 960 220" className="h-full w-full">
-              {[0, 25, 50, 75, 100].map((tick) => {
-                const y = 10 + ((100 - tick) / 100) * 190
-                return (
-                  <g key={`scy-${tick}`}>
-                    <line x1="0" y1={y} x2="960" y2={y} stroke="#1E2535" strokeWidth="1" />
-                  </g>
-                )
-              })}
-              {sCurve.length > 1 ? (
-                <>
-                  <polyline
-                    fill="none"
-                    stroke="rgba(59,139,255,.6)"
-                    strokeWidth="2.5"
-                    points={sCurve
-                      .map((p, i) => {
-                        const x = (i / (sCurve.length - 1)) * 960
-                        const y = 10 + ((100 - p.planned) / 100) * 190
-                        return `${x},${y}`
-                      })
-                      .join(' ')}
-                  />
-                  <polyline
-                    fill="none"
-                    stroke="#F4A623"
-                    strokeWidth="3"
-                    points={sCurve
-                      .map((p, i) => {
-                        const x = (i / (sCurve.length - 1)) * 960
-                        const y = 10 + ((100 - p.actual) / 100) * 190
-                        return `${x},${y}`
-                      })
-                      .join(' ')}
-                  />
-                </>
-              ) : null}
-            </svg>
+            {valuationLoadError ? (
+              <p className="px-3 py-8 text-xs text-[#FF3D57]">
+                Could not load valuations: {valuationLoadError}
+              </p>
+            ) : (
+              <ProgrammeScurveCanvas
+                contract={scurveContract}
+                projectStartMs={projectStartMs}
+                timelineEndMs={timelineEndMs}
+                weekMetaMs={
+                  weekMetaMs.length > 0 ? weekMetaMs : [projectStartMs]
+                }
+                actualByPeriod={actualByPeriod}
+              />
+            )}
           </div>
+          {tradeLegend.length > 0 ? (
+            <div className="prog-legend">
+              {tradeLegend.map((t) => (
+                <span key={t.label} className="prog-legend-item">
+                  <span
+                    className="prog-legend-dot"
+                    style={{
+                      background: t.bg,
+                      border: `1px solid ${t.border}`,
+                    }}
+                  />
+                  {t.label}
+                </span>
+              ))}
+            </div>
+          ) : null}
         </div>
       </div>
 
@@ -2056,15 +2417,14 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
         }
         .scurve-area {
           border-top: 1px solid #1e2535;
-          position: relative;
           background: rgba(0, 0, 0, 0.3);
-          height: 220px;
+          display: grid;
+          grid-template-columns: 240px 1fr;
+          grid-template-rows: 220px auto;
         }
         .scurve-label {
-          position: absolute;
-          left: 0;
-          top: 0;
-          bottom: 0;
+          grid-column: 1;
+          grid-row: 1;
           width: 240px;
           border-right: 1px solid #1e2535;
           display: flex;
@@ -2087,12 +2447,58 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
           text-align: center;
           line-height: 1.5;
         }
+        .sc-drawn-block {
+          margin-top: 8px;
+          text-align: center;
+        }
+        .sc-lbl {
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          color: #64748b;
+        }
+        .sc-lbl-mt {
+          margin-top: 3px;
+        }
+        .sc-drawn-val {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 18px;
+          color: #00e676;
+        }
+        .sc-remain-val {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 16px;
+          color: #ff3d57;
+        }
         .scurve-canvas-wrap {
-          position: absolute;
-          left: 240px;
-          right: 0;
-          top: 0;
-          bottom: 0;
+          grid-column: 2;
+          grid-row: 1;
+          position: relative;
+          min-height: 220px;
+        }
+        .prog-legend {
+          grid-column: 1 / -1;
+          grid-row: 2;
+          padding: 8px 12px 12px;
+          border-top: 1px solid rgba(30, 37, 53, 0.6);
+          display: flex;
+          flex-wrap: wrap;
+          align-items: center;
+          gap: 8px 12px;
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          color: #64748b;
+        }
+        .prog-legend-item {
+          display: inline-flex;
+          align-items: center;
+          gap: 5px;
+        }
+        .prog-legend-dot {
+          display: inline-block;
+          width: 10px;
+          height: 10px;
+          border-radius: 2px;
+          flex-shrink: 0;
         }
       `}</style>
     </div>
