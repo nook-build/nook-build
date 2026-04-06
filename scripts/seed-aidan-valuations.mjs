@@ -1,72 +1,64 @@
 /**
- * One-off seed: Aidan valuation lines from the client portal HTML (VALUATION & DRAWDOWN).
- * Inserts 44 BOQ lines × 3 weeks (week_number 1–3) so prev-drawn and cumulative % match the portal.
+ * One-off seed: Aidan valuation lines from the client portal HTML.
+ * Reads the same source as `initData()` in index.html: ITEMS + FILE_DEP, FILE_D2, FILE_D3
+ * (exact per-trade amounts and percentages). Week 4 is inserted with zero this-week claim
+ * (cumulative unchanged), matching the portal “pending” week after WK3.
  *
  * Run: node --env-file=.env.local scripts/seed-aidan-valuations.mjs
- * Optional: PORTAL_VALUATION_HTML=/path/to/index.html (defaults to ~/Downloads/index.html)
+ * Optional: PORTAL_VALUATION_HTML=/path/to/index.html
  *
  * Requires NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY.
- *
- * Note: Production DB uses legacy columns (week_number, item_name, amount, percentage).
+ * Production DB: legacy columns (week_number, item_name, amount, percentage).
  */
 
 import { createClient } from '@supabase/supabase-js'
+import { createContext, runInContext } from 'node:vm'
 import fs from 'fs'
 import path from 'path'
 
 const PROJECT_ID = '5bb2db90-a0c6-4fe5-8627-04662bc29434'
 
-/** Portal cumulative schedule (from index.html pg-cumulative). */
-const WEEK_CERT_W1 = 22614
-const WEEK_CERT_W2 = 25569
-
-const CREATED_AT = {
-  w1: '2026-03-10T12:00:00.000Z',
-  w2: '2026-03-17T12:00:00.000Z',
-  w3: '2026-03-24T12:00:00.000Z',
+/** Same rounding as portal: Math.round((amt/total)*100*10)/10 */
+function pctThisWeek(amt, total) {
+  return total > 0 ? Math.round((amt / total) * 100 * 10) / 10 : 0
 }
 
-function round2(n) {
-  return Math.round(n * 100) / 100
+/** Cumulative % of contract after summing week amounts (portal-style rounding). */
+function cumDrawnPct(total, a1, a2, a3) {
+  const s = (a1 || 0) + (a2 || 0) + (a3 || 0)
+  return total > 0 ? Math.round((s / total) * 100 * 10) / 10 : 0
+}
+
+const CREATED_AT = {
+  1: '2026-03-10T12:00:00.000Z',
+  2: '2026-03-17T12:00:00.000Z',
+  3: '2026-03-24T12:00:00.000Z',
+  4: '2026-03-31T12:00:00.000Z',
 }
 
 /**
- * Parse #v-tbody from portal HTML: description, contract, prev drawn, this-week %, cert £, cumulative %.
+ * Evaluates `const ITEMS` … `const FILE_D3` block from portal HTML (same as initData inputs).
  */
-function parseValuationTbody(html) {
-  const start = html.indexOf('<tbody id="v-tbody">')
-  const end = html.indexOf('</tbody>', start)
-  if (start < 0 || end < 0) throw new Error('Could not find tbody#v-tbody')
-  const chunk = html.slice(start, end)
-  const trParts = chunk.split('<tr').slice(1).map((s) => '<tr' + s.split('</tr>')[0] + '</tr>')
-  const items = []
-  for (const tr of trParts) {
-    if (tr.includes('ph-cell')) continue
-    const lock = tr.match(/lockItem\(&#39;((?:&#39;|&amp;|[^&])+?)&#39;,\s*(\d+)\)/)
-    if (!lock) continue
-    const desc = lock[1].replace(/&#39;/g, "'").replace(/&amp;/g, '&')
-    const money = [...tr.matchAll(/£([\d,]+)/g)].map((m) =>
-      parseFloat(m[1].replace(/,/g, '')),
-    )
-    const contract = money[0]
-    const prev = money[1]
-    const inp = tr.match(/<input[^>]*class="pi[^"]*"[^>]*value="([^"]*)"/)
-    const pctWeek = inp && inp[1] !== '' ? parseFloat(inp[1]) : 0
-    const certM = tr.match(/id="cert_[^"]+"[^>]*>([^<]+)</)
-    const certStr = certM ? certM[1].trim() : '—'
-    let amtDue = 0
-    if (certStr !== '—' && certStr !== '') {
-      const cm = certStr.match(/£([\d,]+)/)
-      amtDue = cm ? parseFloat(cm[1].replace(/,/g, '')) : 0
-    }
-    const cumM = tr.match(/✓ ([\d.]+)%/)
-    const cumPct = cumM ? parseFloat(cumM[1]) : null
-    items.push({ desc, contract, prev, pctWeek, amtDue, cumPct })
+function extractPortalValuationData(html) {
+  const start = html.indexOf('const ITEMS = ')
+  const end = html.indexOf('function initData()', start)
+  if (start < 0 || end < 0) {
+    throw new Error('Portal HTML missing ITEMS block or initData()')
   }
-  if (items.length !== 44) {
-    throw new Error(`Expected 44 valuation lines, got ${items.length}`)
+  const block = html.slice(start, end)
+  const sandbox = {}
+  const ctx = createContext(sandbox)
+  runInContext(
+    block +
+      '\nthis.__ITEMS = ITEMS; this.__FILE_DEP = FILE_DEP; this.__FILE_D2 = FILE_D2; this.__FILE_D3 = FILE_D3;',
+    ctx,
+  )
+  const { __ITEMS: ITEMS, __FILE_DEP: FILE_DEP, __FILE_D2: FILE_D2, __FILE_D3: FILE_D3 } =
+    sandbox
+  if (!Array.isArray(ITEMS) || ITEMS.length !== 44) {
+    throw new Error(`Expected ITEMS length 44, got ${ITEMS?.length}`)
   }
-  return items
+  return { ITEMS, FILE_DEP, FILE_D2, FILE_D3 }
 }
 
 function loadPortalHtml() {
@@ -91,60 +83,53 @@ function loadPortalHtml() {
   )
 }
 
-function buildRows(portalLines) {
-  const ratioW1 = WEEK_CERT_W1 / (WEEK_CERT_W1 + WEEK_CERT_W2)
+function buildRows({ ITEMS, FILE_DEP, FILE_D2, FILE_D3 }) {
   const rows = []
-  let lineOrder = 0
 
-  for (const line of portalLines) {
-    lineOrder += 1
-    const { desc, contract: cv, prev, pctWeek, amtDue, cumPct } = line
-    const w1Amt = round2(prev * ratioW1)
-    const w2Amt = round2(prev - w1Amt)
+  for (let i = 0; i < ITEMS.length; i++) {
+    const it = ITEMS[i]
+    const name = it.name
+    const cv = it.total
+    const d1 = FILE_DEP[name] ?? 0
+    const d2 = FILE_D2[name] ?? 0
+    const d3 = FILE_D3[name] ?? 0
+    const d4 = 0
 
-    const pctW1 = cv > 0 ? round2((w1Amt / cv) * 100) : 0
-    const cumAfterW1 = cv > 0 ? round2((w1Amt / cv) * 100) : 0
-    const cumAfterW2 = cv > 0 ? round2((prev / cv) * 100) : 0
-    const pctW2 = cv > 0 ? round2((w2Amt / cv) * 100) : 0
+    const lineOrder = i + 1
 
-    rows.push({
-      project_id: PROJECT_ID,
-      week_number: 1,
-      item_name: desc,
-      contract_value: cv,
-      percentage: pctW1,
-      cumulative_percent: cumAfterW1,
-      amount: w1Amt,
-      locked: false,
-      line_order: lineOrder,
-      created_at: CREATED_AT.w1,
-    })
+    const w1Pct = pctThisWeek(d1, cv)
+    const w1Cum = cumDrawnPct(cv, d1, 0, 0)
 
-    rows.push({
-      project_id: PROJECT_ID,
-      week_number: 2,
-      item_name: desc,
-      contract_value: cv,
-      percentage: pctW2,
-      cumulative_percent: cumAfterW2,
-      amount: w2Amt,
-      locked: false,
-      line_order: lineOrder,
-      created_at: CREATED_AT.w2,
-    })
+    const w2Pct = pctThisWeek(d2, cv)
+    const w2Cum = cumDrawnPct(cv, d1, d2, 0)
 
-    rows.push({
-      project_id: PROJECT_ID,
-      week_number: 3,
-      item_name: desc,
-      contract_value: cv,
-      percentage: pctWeek,
-      cumulative_percent: cumPct,
-      amount: amtDue,
-      locked: false,
-      line_order: lineOrder,
-      created_at: CREATED_AT.w3,
-    })
+    const w3Pct = pctThisWeek(d3, cv)
+    const w3Cum = cumDrawnPct(cv, d1, d2, d3)
+
+    const w4Pct = 0
+    const w4Cum = w3Cum
+
+    const weeks = [
+      [1, d1, w1Pct, w1Cum, CREATED_AT[1]],
+      [2, d2, w2Pct, w2Cum, CREATED_AT[2]],
+      [3, d3, w3Pct, w3Cum, CREATED_AT[3]],
+      [4, d4, w4Pct, w4Cum, CREATED_AT[4]],
+    ]
+
+    for (const [weekNum, amount, percentage, cumulative_percent, created_at] of weeks) {
+      rows.push({
+        project_id: PROJECT_ID,
+        week_number: weekNum,
+        item_name: name,
+        contract_value: cv,
+        percentage,
+        cumulative_percent,
+        amount,
+        locked: false,
+        line_order: lineOrder,
+        created_at,
+      })
+    }
   }
 
   return rows
@@ -159,8 +144,8 @@ async function main() {
   }
 
   const html = loadPortalHtml()
-  const portalLines = parseValuationTbody(html)
-  const rows = buildRows(portalLines)
+  const data = extractPortalValuationData(html)
+  const rows = buildRows(data)
 
   const supabase = createClient(url, key)
 
@@ -184,8 +169,20 @@ async function main() {
     }
   }
 
+  let sum1 = 0
+  let sum2 = 0
+  let sum3 = 0
+  for (const it of data.ITEMS) {
+    sum1 += data.FILE_DEP[it.name] ?? 0
+    sum2 += data.FILE_D2[it.name] ?? 0
+    sum3 += data.FILE_D3[it.name] ?? 0
+  }
+
   console.log(
-    `Inserted ${rows.length} valuation rows (${portalLines.length} lines × 3 weeks) for project ${PROJECT_ID}`,
+    `Inserted ${rows.length} valuation rows (44 lines × 4 weeks) for project ${PROJECT_ID}`,
+  )
+  console.log(
+    `Week certs (from FILE_*): W1 £${sum1.toFixed(2)} · W2 £${sum2.toFixed(2)} · W3 £${sum3.toFixed(2)}`,
   )
 }
 

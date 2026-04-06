@@ -262,6 +262,7 @@ const VALUATION_WEEK_NUM_TO_LABEL: Record<number, string> = {
   1: '9 Mar 26 — 15 Mar 26',
   2: '16 Mar 26 — 22 Mar 26',
   3: '23 Mar 26 — 29 Mar 26',
+  4: '30 Mar 26 — 5 Apr 26',
 }
 
 function normalizeValuationRow(raw: Record<string, unknown>): ValuationRecord {
