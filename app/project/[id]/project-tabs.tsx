@@ -4314,7 +4314,10 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         ((delaysRes.data ?? []) as Record<string, unknown>[]).map((d) => ({
           id: String(d.id ?? crypto.randomUUID()),
           startWeek: Number(d.start_week ?? 1),
-          days: Number(d.days_lost ?? 0),
+          days:
+            String(d.unit ?? 'days') === 'weeks'
+              ? Number(d.duration ?? 0) * 7
+              : Number(d.duration ?? d.days_lost ?? 0),
           reason: String(d.reason ?? 'Other'),
           notes: String(d.notes ?? ''),
           dateLogged: String(d.date_logged ?? ''),
@@ -4550,21 +4553,31 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     const startW = Math.max(1, parseInt(delayStartWeekInput || '1', 10))
     const payload = {
       project_id: project.id,
+      duration: raw,
+      unit: delayUnit,
       start_week: startW,
-      days_lost: days,
       reason: delayReasonInput,
       notes: delayNotesInput.trim(),
       date_logged: new Date().toISOString().slice(0, 10),
     }
+    console.log('[delays] inserting payload', payload)
     const { data, error } = await supabase
       .from('delays')
       .insert(payload)
       .select('*')
       .maybeSingle()
     if (error) {
+      console.error('[delays] insert error', {
+        message: error.message,
+        details: error.details,
+        hint: error.hint,
+        code: error.code,
+        payload,
+      })
       setLoadError(error.message)
       return
     }
+    console.log('[delays] insert success', data)
     const inserted = data as Record<string, unknown> | null
     if (inserted) {
       setDelayLogs((prev) => [
@@ -4572,7 +4585,10 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         {
           id: String(inserted.id ?? crypto.randomUUID()),
           startWeek: Number(inserted.start_week ?? startW),
-          days: Number(inserted.days_lost ?? days),
+          days:
+            String(inserted.unit ?? delayUnit) === 'weeks'
+              ? Number(inserted.duration ?? raw) * 7
+              : Number(inserted.duration ?? inserted.days_lost ?? days),
           reason: String(inserted.reason ?? delayReasonInput),
           notes: String(inserted.notes ?? delayNotesInput.trim()),
           dateLogged: String(inserted.date_logged ?? payload.date_logged),
