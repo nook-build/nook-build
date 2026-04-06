@@ -14,16 +14,13 @@ import {
   formatInstantAsDate,
   formatIsoDateOnly,
   formatMoneyGBP,
-  formatPercentDisplay,
 } from '@/lib/format'
 import { supabase } from '@/lib/supabase'
 
 const accent = '#F4A623'
 const success = '#00E676'
 const infoBlue = '#3B8BFF'
-const cyan = '#00BCD4'
 const danger = '#FF3D57'
-const progressPurple = '#9C27B0'
 const border = '#1E2535'
 const surface = '#0F1219'
 
@@ -4132,47 +4129,6 @@ function CommandCentreStatCard({
   )
 }
 
-function CommandCentreProgressRow({
-  label,
-  percent,
-  sublabel,
-  barColor,
-}: {
-  label: string
-  percent: number | null
-  sublabel?: string
-  barColor: string
-}) {
-  const pct =
-    percent == null ? null : Math.min(100, Math.max(0, percent))
-  return (
-    <div>
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <span className="text-sm font-medium text-[#E2E8F8]">{label}</span>
-        <span className="text-sm font-semibold tabular-nums text-[#F8FAFC]">
-          {pct != null ? formatPercentDisplay(pct) : '—'}
-        </span>
-      </div>
-      {sublabel ? (
-        <p className="mt-0.5 text-xs text-[#64748B]">{sublabel}</p>
-      ) : null}
-      <div
-        className="mt-2 h-2.5 w-full overflow-hidden rounded-full"
-        style={{ backgroundColor: '#1E2535' }}
-      >
-        <div
-          className="h-2.5 rounded-full transition-[width] duration-500"
-          style={{
-            width: pct != null ? `${pct}%` : '0%',
-            backgroundColor: barColor,
-            boxShadow: pct != null && pct > 0 ? `0 0 12px ${barColor}59` : undefined,
-          }}
-        />
-      </div>
-    </div>
-  )
-}
-
 function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const [activeTab, setActiveTab] = useState<
     | 'overview'
@@ -4312,20 +4268,15 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const revisedContract =
     contractSum > 0 ? contractSum + variationsTotal : null
 
-  const totalDrawn = useMemo(() => {
-    return rows.reduce(
-      (s, r) =>
-        r.status.toLowerCase() === 'paid' ? s + num(r.amount_due) : s,
-      0,
-    )
-  }, [rows])
+  const totalDrawn = useMemo(
+    () => rows.reduce((s, r) => s + num(r.amount_due), 0),
+    [rows],
+  )
 
   const remaining =
     revisedContract != null && revisedContract > 0
       ? Math.max(0, revisedContract - totalDrawn)
       : null
-
-  const completionPct = weightedValuePercent(latestRows, pctCumulative)
 
   const timelinePct = useMemo(
     () => timelinePercent(project.start_date, project.handover_date),
@@ -4353,6 +4304,31 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
 
   const currentWeekDisplay = latestPeriod ?? '—'
 
+  const chronologicalWeekLabels = useMemo(
+    () => valuationChronologicalWeekLabels(rows),
+    [rows],
+  )
+  const currentWeekNumber =
+    latestPeriod && chronologicalWeekLabels.includes(latestPeriod)
+      ? chronologicalWeekLabels.indexOf(latestPeriod) + 1
+      : null
+  const totalItems = useMemo(() => {
+    return new Set(rows.map((r) => (r.description ?? '').trim()).filter(Boolean)).size
+  }, [rows])
+  const activeItems = latestRows.filter((r) => num(r.percent_complete) > 0).length
+  const remainingItems = Math.max(0, totalItems - lockedItems)
+  const completionByLockPct = totalItems > 0 ? (lockedItems / totalItems) * 100 : 0
+  const timelineDonePct =
+    durationWeeks != null && durationWeeks > 0 && currentWeekNumber != null
+      ? Math.min(100, (currentWeekNumber / durationWeeks) * 100)
+      : (timelinePct ?? 0)
+  const weekOneLabel = chronologicalWeekLabels[0] ?? null
+  const depositAmount = weekOneLabel
+    ? rows
+        .filter((r) => r.week_label === weekOneLabel)
+        .reduce((s, r) => s + num(r.amount_due), 0)
+    : 0
+
   const handoverStat =
     handoverWeeks.weeks == null
       ? '—'
@@ -4372,32 +4348,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   ] as const
 
   const overviewContent = (
-    <div className="space-y-8">
-      <div
-        className="relative overflow-hidden rounded-xl border"
-        style={{ borderColor: border, backgroundColor: surface }}
-      >
-        <div
-          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
-          style={{
-            background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
-          }}
-          aria-hidden
-        />
-        <div className="p-5 sm:p-7">
-          <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
-            COMMAND CENTRE
-          </p>
-          <h2 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC] sm:text-xl">
-            Live programme & commercial position
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm text-[#64748B]">
-            Contract, cash, build progress, key dates, and site weather — aligned
-            with your valuation and project records in Supabase.
-          </p>
-        </div>
-      </div>
-
+    <div className="ov-root space-y-4" id="pg-overview">
       {loadError ? (
         <div
           className="rounded-lg border border-red-900/40 bg-red-950/25 px-4 py-3 text-sm text-red-200"
@@ -4407,303 +4358,211 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         </div>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        <CommandCentreStatCard
-          label="Contract value"
-          value={
-            loading
-              ? '…'
-              : contractSum > 0
-                ? formatMoneyGBP(contractSum)
-                : '—'
-          }
-          hint="Original / baseline sum"
-          valueColor={accent}
-        />
-        <CommandCentreStatCard
-          label="Total drawn"
-          value={loading ? '…' : formatMoneyGBP(totalDrawn)}
-          hint="Paid valuation lines (all periods)"
-          valueColor={success}
-        />
-        <CommandCentreStatCard
-          label="Remaining"
-          value={
-            loading
-              ? '…'
-              : remaining != null
-                ? formatMoneyGBP(remaining)
-                : '—'
-          }
-          hint="Revised contract less drawn"
-          valueColor={infoBlue}
-        />
-        <CommandCentreStatCard
-          label="Current week"
-          value={loading ? '…' : currentWeekDisplay}
-          hint={
-            latestPeriod ? 'Latest valuation period' : 'No valuation periods yet'
-          }
-          valueColor={accent}
-        />
-        <CommandCentreStatCard
-          label="Weeks to handover"
-          value={loading ? '…' : handoverStat}
-          hint={
-            handoverWeeks.overdue
-              ? 'Past planned handover date'
-              : 'From today to handover (calendar weeks)'
-          }
-          valueColor={danger}
-        />
-        <CommandCentreStatCard
-          label="Items locked"
-          value={loading ? '…' : String(lockedItems)}
-          hint="Locked / frozen items on record"
-          valueColor={cyan}
-        />
-      </div>
-
-      <div
-        className="relative overflow-hidden rounded-xl border"
-        style={{ borderColor: border, backgroundColor: surface }}
-      >
-        <div
-          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
-          style={{
-            background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
-          }}
-          aria-hidden
-        />
-        <div className="space-y-6 p-5 sm:p-7">
-          <div>
-            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
-              Progress
-            </h3>
-            <p className="mt-1 text-sm text-[#64748B]">
-              Timeline, payments position, and build completion from the latest
-              valuation period.
-            </p>
+      <div className="stats">
+        <div className="sc a">
+          <div className="sl">Contract Value</div>
+          <div className="sv" style={{ color: 'var(--ac)' }}>
+            {loading ? '…' : contractSum > 0 ? formatMoneyGBP(contractSum) : '—'}
           </div>
-          <CommandCentreProgressRow
-            label="Timeline"
-            percent={timelinePct}
-            sublabel="Elapsed programme vs start → handover"
-            barColor={accent}
-          />
-          <CommandCentreProgressRow
-            label="Payments (drawn to date)"
-            percent={paymentsPct}
-            sublabel="Paid certificates vs revised contract value"
-            barColor={success}
-          />
-          <CommandCentreProgressRow
-            label="Completion (build progress)"
-            percent={completionPct}
-            sublabel="Weighted cumulative % (latest period lines)"
-            barColor={progressPurple}
-          />
+          <div className="ss">Original contract</div>
+        </div>
+        <div className="sc g">
+          <div className="sl">Total Drawn</div>
+          <div className="sv" style={{ color: 'var(--gr)' }}>
+            {loading ? '…' : formatMoneyGBP(totalDrawn)}
+          </div>
+          <div className="ss">{paymentsPct != null ? `${paymentsPct.toFixed(1)}%` : '—'}</div>
+        </div>
+        <div className="sc b">
+          <div className="sl">Remaining</div>
+          <div className="sv" style={{ color: 'var(--bl)' }}>
+            {loading ? '…' : remaining != null ? formatMoneyGBP(remaining) : '—'}
+          </div>
+          <div className="ss">to draw</div>
+        </div>
+        <div className="sc p">
+          <div className="sl">Items Locked</div>
+          <div className="sv" style={{ color: 'var(--pu)' }}>
+            {loading ? '…' : `${lockedItems} / ${totalItems || 44}`}
+          </div>
+          <div className="ss">complete</div>
+        </div>
+        <div className="sc t">
+          <div className="sl">Current Week</div>
+          <div className="sv" style={{ color: 'var(--tl)' }}>
+            {loading ? '…' : currentWeekNumber != null ? `Wk ${currentWeekNumber}` : '—'}
+          </div>
+          <div className="ss">
+            {durationWeeks != null && currentWeekNumber != null
+              ? `of ${durationWeeks} weeks`
+              : currentWeekDisplay}
+          </div>
+        </div>
+        <div className="sc r">
+          <div className="sl">Weeks to Handover</div>
+          <div className="sv" style={{ color: 'var(--rd)' }}>
+            {loading ? '…' : handoverStat}
+          </div>
+          <div className="ss">{formatIsoDateOnly(project.handover_date)}</div>
         </div>
       </div>
 
-      <div
-        className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
-        style={{ borderColor: border }}
-      >
-        {[
-          {
-            k: 'Start date',
-            v: formatIsoDateOnly(project.start_date),
-          },
-          {
-            k: 'Handover date',
-            v: formatIsoDateOnly(project.handover_date),
-          },
-          {
-            k: 'Duration (weeks)',
-            v: durationWeeks != null ? String(durationWeeks) : '—',
-          },
-          {
-            k: 'Deposit paid',
-            v:
-              project.deposit_paid === true
-                ? 'Yes'
-                : project.deposit_paid === false
-                  ? 'No'
-                  : '—',
-          },
-        ].map((row) => (
-          <div
-            key={row.k}
-            className="relative overflow-hidden rounded-xl border px-5 py-4"
-            style={{ borderColor: border, backgroundColor: '#080A0F' }}
-          >
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-              {row.k}
-            </p>
-            <p
-              className="mt-2 text-lg font-semibold tabular-nums text-[#F8FAFC]"
-              style={
-                row.k === 'Deposit paid' && row.v === 'Yes'
-                  ? { color: accent }
-                  : undefined
-              }
-            >
-              {row.v}
-            </p>
+      <div className="batgrid">
+        <div className="bc ba">
+          <div className="btop">
+            <div>
+              <div className="blab">Schedule</div>
+              <div className="bnam" style={{ color: 'var(--ac)' }}>TIMELINE</div>
+            </div>
+            <div className="bpct" style={{ color: 'var(--ac)' }}>
+              {loading ? '…' : `${timelineDonePct.toFixed(0)}%`}
+            </div>
           </div>
-        ))}
+          <div className="btrack">
+            <div className="bbar">
+              <div className="bfill" style={{ width: `${Math.max(0, Math.min(100, timelineDonePct))}%`, background: 'linear-gradient(90deg,#B37200,#F4A623,#FFD080)' }} />
+            </div>
+            <div className="btick" />
+          </div>
+          <div className="bstats">
+            <div className="bstat"><div className="bstat-l">Current Wk</div><div className="bstat-v" style={{ color: 'var(--ac)' }}>{currentWeekNumber ?? '—'}</div></div>
+            <div className="bstat"><div className="bstat-l">Weeks Done</div><div className="bstat-v" style={{ color: 'var(--ac)' }}>{currentWeekNumber ?? '—'}</div></div>
+            <div className="bstat"><div className="bstat-l">Weeks Left</div><div className="bstat-v" style={{ color: 'var(--rd)' }}>{handoverWeeks.weeks ?? '—'}</div></div>
+          </div>
+          <div className="split-row">
+            <div className="split-cell"><div className="split-l">% DONE</div><div className="split-v" style={{ color: 'var(--ac)' }}>{timelineDonePct.toFixed(0)}%</div></div>
+            <div className="split-sep" />
+            <div className="split-cell"><div className="split-l">% LEFT</div><div className="split-v" style={{ color: 'var(--bl)' }}>{(100 - Math.max(0, Math.min(100, timelineDonePct))).toFixed(0)}%</div></div>
+          </div>
+        </div>
+
+        <div className="bc bg">
+          <div className="btop">
+            <div><div className="blab">Payments</div><div className="bnam" style={{ color: 'var(--gr)' }}>DRAWN TO DATE</div></div>
+            <div className="bpct" style={{ color: 'var(--gr)' }}>{paymentsPct != null ? `${paymentsPct.toFixed(0)}%` : '—'}</div>
+          </div>
+          <div className="btrack">
+            <div className="bbar">
+              <div className="bfill" style={{ width: `${Math.max(0, Math.min(100, paymentsPct ?? 0))}%`, background: 'linear-gradient(90deg,#007A6B,#00E676,#80FFB8)' }} />
+            </div>
+            <div className="btick" />
+          </div>
+          <div className="bstats">
+            <div className="bstat"><div className="bstat-l">Drawn</div><div className="bstat-v" style={{ color: 'var(--gr)' }}>{formatMoneyGBP(totalDrawn).replace(',000','k')}</div></div>
+            <div className="bstat"><div className="bstat-l">Contract</div><div className="bstat-v" style={{ color: 'var(--mu)' }}>{revisedContract != null ? formatMoneyGBP(revisedContract).replace(',000','k') : '—'}</div></div>
+            <div className="bstat"><div className="bstat-l">Remaining</div><div className="bstat-v" style={{ color: 'var(--rd)' }}>{remaining != null ? formatMoneyGBP(remaining).replace(',000','k') : '—'}</div></div>
+          </div>
+          <div className="split-row">
+            <div className="split-cell"><div className="split-l">% CLAIMED</div><div className="split-v" style={{ color: 'var(--gr)' }}>{paymentsPct != null ? `${paymentsPct.toFixed(0)}%` : '—'}</div></div>
+            <div className="split-sep" />
+            <div className="split-cell"><div className="split-l">% LEFT</div><div className="split-v" style={{ color: 'var(--rd)' }}>{paymentsPct != null ? `${(100 - Math.max(0, Math.min(100, paymentsPct))).toFixed(0)}%` : '—'}</div></div>
+          </div>
+        </div>
+
+        <div className="bc bp">
+          <div className="btop">
+            <div><div className="blab">Completion</div><div className="bnam" style={{ color: 'var(--pu)' }}>BUILD PROGRESS</div></div>
+            <div className="bpct" style={{ color: 'var(--pu)' }}>{`${completionByLockPct.toFixed(0)}%`}</div>
+          </div>
+          <div className="btrack">
+            <div className="bbar">
+              <div className="bfill" style={{ width: `${Math.max(0, Math.min(100, completionByLockPct))}%`, background: 'linear-gradient(90deg,#5B2FCF,#8B5CF6,#C4B5FD)' }} />
+            </div>
+            <div className="btick" />
+          </div>
+          <div className="bstats">
+            <div className="bstat"><div className="bstat-l">Locked ✓</div><div className="bstat-v" style={{ color: 'var(--gr)' }}>{lockedItems}</div></div>
+            <div className="bstat"><div className="bstat-l">Active</div><div className="bstat-v" style={{ color: 'var(--ac)' }}>{activeItems}</div></div>
+            <div className="bstat"><div className="bstat-l">Remaining</div><div className="bstat-v" style={{ color: 'var(--mu)' }}>{remainingItems}</div></div>
+          </div>
+          <div className="split-row">
+            <div className="split-cell"><div className="split-l">% COMPLETE</div><div className="split-v" style={{ color: 'var(--pu)' }}>{`${completionByLockPct.toFixed(0)}%`}</div></div>
+            <div className="split-sep" />
+            <div className="split-cell"><div className="split-l">% REMAINING</div><div className="split-v" style={{ color: 'var(--rd)' }}>{`${(100 - Math.max(0, Math.min(100, completionByLockPct))).toFixed(0)}%`}</div></div>
+          </div>
+        </div>
+      </div>
+
+      <div className="dates-row">
+        <div><div className="d-l">Start</div><div className="d-v ac">{formatIsoDateOnly(project.start_date).toUpperCase()}</div></div>
+        <div><div className="d-l">Handover</div><div className="d-v gr">{formatIsoDateOnly(project.handover_date).toUpperCase()}</div></div>
+        <div><div className="d-l">Duration</div><div className="d-v bl">{durationWeeks != null ? `${durationWeeks} WEEKS` : '—'}</div></div>
+        <div><div className="d-l">Deposit Paid</div><div className="d-v tl">{depositAmount > 0 ? formatMoneyGBP(depositAmount) : '—'}</div></div>
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <div
-          className="relative overflow-hidden rounded-xl border"
-          style={{ borderColor: border, backgroundColor: surface }}
-        >
-          <div
-            className="absolute left-0 top-0 h-0.5 w-full opacity-90"
-            style={{
-              background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
-            }}
-            aria-hidden
-          />
-          <div className="p-5 sm:p-7">
-            <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
-              LIVE WEATHER
-            </p>
-            <h3 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC]">
-              Site conditions
-            </h3>
-            <p className="mt-1 text-sm text-[#64748B]">
-              Open-Meteo forecast for{' '}
-              <span style={{ color: accent }} className="font-medium">
-                {SW14_7DF_LABEL}
-              </span>
-            </p>
-
-            {weather.loading ? (
-              <p className="mt-8 text-sm text-[#64748B]">Loading weather…</p>
-            ) : weather.error ? (
-              <p
-                className="mt-6 rounded-lg border border-amber-900/35 bg-amber-950/20 px-4 py-3 text-sm text-amber-100"
-                role="status"
-              >
-                {weather.error}
-              </p>
-            ) : weather.temp != null && weather.code != null ? (
-              <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <p className="text-4xl font-semibold tabular-nums tracking-tight text-[#F8FAFC]">
-                    {Math.round(weather.temp)}
-                    <span className="text-2xl text-[#94A3B8]">°C</span>
-                  </p>
-                  <p className="mt-1 text-sm font-medium text-[#E2E8F8]">
-                    {wmoWeatherLabel(weather.code)}
-                  </p>
-                  {weather.label ? (
-                    <p className="mt-1 text-xs text-[#64748B]">{weather.label}</p>
-                  ) : null}
-                </div>
-                <dl className="grid gap-2 text-sm text-[#94A3B8] sm:text-right">
-                  {weather.wind != null ? (
-                    <div>
-                      <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-                        Wind
-                      </dt>
-                      <dd className="tabular-nums text-[#E2E8F8]">
-                        {weather.wind.toFixed(0)} km/h
-                      </dd>
-                    </div>
-                  ) : null}
-                  {weather.humidity != null ? (
-                    <div>
-                      <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-                        Humidity
-                      </dt>
-                      <dd className="tabular-nums text-[#E2E8F8]">
-                        {Math.round(weather.humidity)}%
-                      </dd>
-                    </div>
-                  ) : null}
-                </dl>
-              </div>
-            ) : (
-              <p className="mt-6 text-sm text-[#64748B]">
-                Live weather is temporarily fixed to SW14 7DF coordinates.
-              </p>
-            )}
-          </div>
+        <div className="panel-lite">
+          <div className="pl-head">LIVE WEATHER</div>
+          {weather.loading ? (
+            <div className="pl-sub">Loading weather…</div>
+          ) : weather.error ? (
+            <div className="pl-sub">{weather.error}</div>
+          ) : (
+            <>
+              <div className="pl-main">{weather.temp != null ? `${Math.round(weather.temp)}°C` : '—'}</div>
+              <div className="pl-sub">{weather.code != null ? wmoWeatherLabel(weather.code) : '—'} · {SW14_7DF_LABEL}</div>
+            </>
+          )}
         </div>
-
-        <div
-          className="relative overflow-hidden rounded-xl border"
-          style={{ borderColor: border, backgroundColor: surface }}
-        >
-          <div
-            className="absolute left-0 top-0 h-0.5 w-full opacity-90"
-            style={{
-              background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
-            }}
-            aria-hidden
-          />
-          <div className="p-5 sm:p-7">
-            <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
-              LIVE PROJECT SUMMARY
-            </p>
-            <h3 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC]">
-              Commercial snapshot
-            </h3>
-            <dl className="mt-6 space-y-4">
-              <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#1E2535] pb-4">
-                <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-                  Original contract
-                </dt>
-                <dd
-                  className="text-right text-lg font-semibold tabular-nums"
-                  style={{ color: accent }}
-                >
-                  {originalContract != null
-                    ? formatMoneyGBP(num(originalContract))
-                    : '—'}
-                </dd>
-              </div>
-              <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#1E2535] pb-4">
-                <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-                  Variations total
-                </dt>
-                <dd className="text-right text-lg font-semibold tabular-nums text-[#F8FAFC]">
-                  {formatSignedMoneyGBP(variationsTotal)}
-                </dd>
-              </div>
-              <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#1E2535] pb-4">
-                <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-                  Revised contract value
-                </dt>
-                <dd
-                  className="text-right text-lg font-semibold tabular-nums"
-                  style={{ color: accent }}
-                >
-                  {revisedContract != null && revisedContract > 0
-                    ? formatMoneyGBP(revisedContract)
-                    : '—'}
-                </dd>
-              </div>
-              <div className="flex flex-wrap items-baseline justify-between gap-2">
-                <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-                  Total delays
-                </dt>
-                <dd className="text-right text-lg font-semibold tabular-nums text-[#F8FAFC]">
-                  {delaysDaysRaw == null
-                    ? '—'
-                    : `${delaysDaysRaw} day${delaysDaysRaw === 1 ? '' : 's'}`}
-                </dd>
-              </div>
-            </dl>
-          </div>
+        <div className="panel-lite">
+          <div className="pl-head">LIVE PROJECT SUMMARY</div>
+          <div className="summary-row"><span>Original contract</span><strong>{originalContract != null ? formatMoneyGBP(num(originalContract)) : '—'}</strong></div>
+          <div className="summary-row"><span>Variations total</span><strong>{formatSignedMoneyGBP(variationsTotal)}</strong></div>
+          <div className="summary-row"><span>Revised contract value</span><strong>{revisedContract != null ? formatMoneyGBP(revisedContract) : '—'}</strong></div>
+          <div className="summary-row no-b"><span>Total delays</span><strong>{delaysDaysRaw == null ? '—' : `${delaysDaysRaw} day${delaysDaysRaw === 1 ? '' : 's'}`}</strong></div>
         </div>
       </div>
+
+      <style jsx>{`
+        .ov-root{--ac:#F4A623;--gr:#00E676;--rd:#FF3D57;--bl:#3B8BFF;--tl:#00BFA5;--pu:#8B5CF6;--mu:#4A5568;--bd:#1E2535;--s:#0F1219;--s2:#161B26;}
+        .stats{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;margin-bottom:2px;}
+        .sc{background:var(--s);border:1px solid var(--bd);border-radius:12px;padding:12px 14px;position:relative;overflow:hidden;}
+        .sc::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:12px 12px 0 0;}
+        .sc.a::before{background:var(--ac)} .sc.g::before{background:var(--gr)} .sc.b::before{background:var(--bl)} .sc.r::before{background:var(--rd)} .sc.t::before{background:var(--tl)} .sc.p::before{background:var(--pu)}
+        .sl{font-size:9px;font-family:'DM Mono',monospace;letter-spacing:1px;text-transform:uppercase;color:var(--mu);margin-bottom:3px;}
+        .sv{font-family:'Bebas Neue',sans-serif;font-size:22px;letter-spacing:1px;line-height:1;}
+        .ss{font-size:9px;color:var(--mu);margin-top:2px;font-family:'DM Mono',monospace;}
+        .batgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+        .bc{background:var(--s);border:1px solid var(--bd);border-radius:14px;padding:16px;position:relative;overflow:hidden;}
+        .bc::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:14px 14px 0 0;}
+        .bc.ba::before{background:var(--ac)} .bc.bg::before{background:var(--gr)} .bc.bp::before{background:var(--pu)}
+        .btop{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;}
+        .blab{font-size:9px;font-family:'DM Mono',monospace;letter-spacing:1px;text-transform:uppercase;color:var(--mu);margin-bottom:2px;}
+        .bnam{font-family:'Bebas Neue',sans-serif;font-size:14px;letter-spacing:1px;line-height:1;}
+        .bpct{font-family:'Bebas Neue',sans-serif;font-size:30px;letter-spacing:1px;line-height:1;}
+        .btrack{display:flex;align-items:center;gap:6px;margin-bottom:9px;}
+        .bbar{flex:1;height:18px;background:var(--s2);border:1.5px solid var(--bd);border-radius:5px;position:relative;overflow:hidden;}
+        .bfill{height:100%;border-radius:4px;position:relative;overflow:hidden;transition:width 1.2s cubic-bezier(.34,1.56,.64,1);}
+        .bfill::after{content:'';position:absolute;top:0;left:-100%;right:0;bottom:0;background:linear-gradient(90deg,transparent,rgba(255,255,255,.15),transparent);animation:sh 2.5s infinite;}
+        @keyframes sh{0%{left:-100%;}100%{left:100%;}}
+        .btick{width:5px;height:10px;background:var(--bd);border-radius:0 3px 3px 0;flex-shrink:0;}
+        .bstats{display:flex;gap:6px;}
+        .bstat{flex:1;background:var(--s2);border:1px solid var(--bd);border-radius:6px;padding:5px 8px;}
+        .bstat-l{font-size:9px;font-family:'DM Mono',monospace;color:var(--mu);margin-bottom:1px;}
+        .bstat-v{font-family:'Bebas Neue',sans-serif;font-size:16px;line-height:1;}
+        .split-row{display:flex;justify-content:space-between;margin-top:10px;padding-top:8px;border-top:1px solid var(--bd);}
+        .split-cell{text-align:center;flex:1;}
+        .split-l{font-family:'DM Mono',monospace;font-size:9px;color:var(--mu);margin-bottom:2px;}
+        .split-v{font-family:'Bebas Neue',sans-serif;font-size:18px;}
+        .split-sep{width:1px;background:var(--bd);}
+        .dates-row{background:linear-gradient(135deg,rgba(244,166,35,.06),rgba(0,230,118,.03));border:1px solid rgba(244,166,35,.18);border-radius:12px;padding:16px 20px;display:grid;grid-template-columns:repeat(4,1fr);gap:10px;}
+        .d-l{font-family:'DM Mono',monospace;font-size:9px;letter-spacing:1px;text-transform:uppercase;color:var(--mu);margin-bottom:2px;}
+        .d-v{font-family:'Bebas Neue',sans-serif;font-size:20px;}
+        .d-v.ac{color:var(--ac)} .d-v.gr{color:var(--gr)} .d-v.bl{color:var(--bl)} .d-v.tl{color:var(--tl)}
+        .panel-lite{background:var(--s);border:1px solid var(--bd);border-radius:12px;padding:14px 16px;}
+        .pl-head{font-family:'DM Mono',monospace;font-size:10px;letter-spacing:2px;color:var(--mu);margin-bottom:8px;}
+        .pl-main{font-family:'Bebas Neue',sans-serif;font-size:34px;color:#E2E8F8;line-height:1;}
+        .pl-sub{font-size:12px;color:var(--mu);margin-top:4px;}
+        .summary-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid rgba(30,37,53,.7);font-size:11px;color:var(--mu);}
+        .summary-row strong{font-family:'Bebas Neue',sans-serif;font-size:16px;color:#E2E8F8;font-weight:400;}
+        .summary-row.no-b{border-bottom:none;}
+        @media (max-width:1200px){.stats{grid-template-columns:repeat(3,1fr);} .batgrid{grid-template-columns:1fr;} }
+        @media (max-width:900px){.dates-row{grid-template-columns:repeat(2,1fr);} }
+        @media (max-width:640px){.stats{grid-template-columns:repeat(2,1fr);} }
+      `}</style>
     </div>
   )
+
 
   function CommandCentreCumulativeTab() {
     const cumulativeCert = rows.reduce((s, r) => s + num(r.cumulative_total), 0)
