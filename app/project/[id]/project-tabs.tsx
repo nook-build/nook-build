@@ -1467,23 +1467,68 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     return [...m.entries()]
   }, [rows])
 
-  const todayWeek = useMemo(() => {
-    if (!project.start_date) return null
-    const startMs = utcMillisFromIsoDate(project.start_date)
-    if (startMs == null) return null
-    const nowMs = todayUtcMidnightMs()
-    const elapsedDays = (nowMs - startMs) / 86400000
-    return Math.max(1, Math.floor(elapsedDays / 7) + 1)
+  const projectStartMs = useMemo(() => {
+    const parsed = utcMillisFromIsoDate(project.start_date)
+    if (parsed != null) return parsed
+    const now = new Date()
+    return Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
   }, [project.start_date])
 
+  const weekMeta = useMemo(() => {
+    return weekRange.map((w) => {
+      const idx = w - minWeek
+      const ms = projectStartMs + idx * 7 * 86400000
+      const d = new Date(ms)
+      const month = d
+        .toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' })
+        .toUpperCase()
+      return { week: w, month, date: d }
+    })
+  }, [weekRange, minWeek, projectStartMs])
+
+  const monthSpans = useMemo(() => {
+    if (weekMeta.length === 0) return []
+    const spans: { month: string; start: number; span: number }[] = []
+    let cur = weekMeta[0].month
+    let start = 0
+    for (let i = 1; i <= weekMeta.length; i += 1) {
+      if (i === weekMeta.length || weekMeta[i].month !== cur) {
+        spans.push({ month: cur, start, span: i - start })
+        if (i < weekMeta.length) {
+          cur = weekMeta[i].month
+          start = i
+        }
+      }
+    }
+    return spans
+  }, [weekMeta])
+
+  const todayWeek = useMemo(() => {
+    const nowMs = todayUtcMidnightMs()
+    const elapsedDays = (nowMs - projectStartMs) / 86400000
+    return Math.max(1, Math.floor(elapsedDays / 7) + 1)
+  }, [projectStartMs])
+
   const todayLineLeftPct = useMemo(() => {
-    if (todayWeek == null) return null
     if (weekRange.length === 0) return null
     const span = maxWeek - minWeek + 1
     if (span <= 0) return null
     const pos = ((todayWeek - minWeek + 0.5) / span) * 100
     return Math.max(0, Math.min(100, pos))
   }, [todayWeek, minWeek, maxWeek, weekRange.length])
+
+  const delayDays = Math.max(0, project.total_delays_days ?? 0)
+  const variationDays = Math.max(0, Math.round(Math.abs(num(project.variations_total)) / 10000))
+  const variationsCount = num(project.variations_total) === 0 ? 0 : 1
+  const totalProgrammeShift = delayDays + variationDays
+  const revisedEndDate = useMemo(() => {
+    if (!project.handover_date) return '—'
+    const endMs = utcMillisFromIsoDate(project.handover_date)
+    if (endMs == null) return '—'
+    const shifted = endMs + totalProgrammeShift * 86400000
+    return formatIsoDateOnly(new Date(shifted).toISOString())
+  }, [project.handover_date, totalProgrammeShift])
+
 
   const sCurve = useMemo(() => {
     const points = weekRange.map((w) => {
@@ -1501,168 +1546,207 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     return points
   }, [rows, weekRange])
 
-  function pctColor(pct: number) {
-    if (pct >= 100) return '#00E676'
-    if (pct > 0) return '#F4A623'
-    return '#94A3B8'
+  function barTone(color: string) {
+    const c = color.toUpperCase()
+    if (c === '#F4A623') return { bg: 'rgba(244,166,35,.18)', border: 'rgba(244,166,35,.4)', prog: '#F4A623', text: '#F4A623' }
+    if (c === '#00E676') return { bg: 'rgba(0,230,118,.18)', border: 'rgba(0,230,118,.4)', prog: '#00E676', text: '#00E676' }
+    if (c === '#3B8BFF') return { bg: 'rgba(59,139,255,.22)', border: 'rgba(59,139,255,.5)', prog: '#3B8BFF', text: '#3B8BFF' }
+    if (c === '#FF3D57') return { bg: 'rgba(255,61,87,.18)', border: 'rgba(255,61,87,.4)', prog: '#FF3D57', text: '#FF3D57' }
+    if (c === '#9C27B0') return { bg: 'rgba(139,92,246,.18)', border: 'rgba(139,92,246,.4)', prog: '#8B5CF6', text: '#8B5CF6' }
+    if (c === '#00BCD4') return { bg: 'rgba(0,191,165,.18)', border: 'rgba(0,191,165,.4)', prog: '#00BFA5', text: '#00BFA5' }
+    return { bg: 'rgba(100,110,130,.35)', border: 'rgba(100,110,130,.55)', prog: '#8899AA', text: '#8899AA' }
   }
 
   return (
-    <div className="space-y-8">
-      <div
-        className="relative overflow-hidden rounded-xl border"
-        style={{ borderColor: border, backgroundColor: surface }}
-      >
-        <div
-          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
-          style={{ background: `linear-gradient(90deg, ${accent}, transparent 70%)` }}
-          aria-hidden
-        />
-        <div className="p-5 sm:p-7">
-          <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
-            PROGRAMME
-          </p>
-          <h2 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC] sm:text-xl">
-            Programme + S-Curve
-          </h2>
-          <p className="mt-1 max-w-2xl text-sm text-[#64748B]">
-            Gantt schedule by trade with completion status and weekly progress
-            curve.
-          </p>
+    <div className="pg" id="pg-programme">
+      <div className="combined-wrap">
+        <div className="combined-head">
+          <div>
+            <div className="pt">WORK PROGRAMME + CASHFLOW S-CURVE</div>
+            <div className="ps">
+              Gantt schedule above · S-curve cashflow below · Today marker live
+            </div>
+          </div>
+          {loading ? <span className="mono-xs text-[#64748B]">Loading…</span> : null}
+        </div>
+
+        <div className="portal-live-panel" id="plp-programme">
+          <div className="plp-title">Programme Impact Summary</div>
+          <div className="portal-live-grid">
+            <div className="plp-card warn">
+              <div className="plp-label">Delay Days</div>
+              <div className="plp-value" style={{ color: '#FF3D57' }}>{delayDays}</div>
+              <div className="plp-sub">Calendar days lost</div>
+            </div>
+            <div className="plp-card warn">
+              <div className="plp-label">Revised End Date</div>
+              <div className="plp-value date">{revisedEndDate}</div>
+              <div className="plp-sub">Original: {formatIsoDateOnly(project.handover_date)}</div>
+            </div>
+            <div className="plp-card accent">
+              <div className="plp-label">Variation Days</div>
+              <div className="plp-value" style={{ color: '#F4A623' }}>{variationDays}</div>
+              <div className="plp-sub">Added to programme</div>
+            </div>
+            <div className="plp-card accent">
+              <div className="plp-label">Variations Count</div>
+              <div className="plp-value" style={{ color: '#F4A623' }}>{variationsCount}</div>
+              <div className="plp-sub">Logged variations</div>
+            </div>
+            <div className="plp-card">
+              <div className="plp-label">Total Programme Shift</div>
+              <div className="plp-value" style={{ color: '#3B8BFF' }}>{totalProgrammeShift} days</div>
+              <div className="plp-sub">Delays + variation days</div>
+            </div>
+          </div>
           {loadError ? (
-            <p className="mt-3 text-sm text-[#FF3D57]" role="alert">
-              Could not load programme items: {loadError}. Showing sample programme.
+            <p className="mt-3 text-sm text-[#FF3D57]">
+              Could not load programme_items: {loadError}. Showing defaults.
             </p>
           ) : null}
         </div>
-      </div>
 
-      <div
-        className="relative overflow-hidden rounded-xl border"
-        style={{ borderColor: border, backgroundColor: surface }}
-      >
-        <div className="p-5 sm:p-7">
-          <div className="mb-4 flex items-center justify-between">
-            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
-              Gantt chart
-            </h3>
-            {loading ? <span className="text-xs text-[#64748B]">Loading…</span> : null}
+        <div className="combined-body" id="gantt-combined">
+          <div className="gantt-labels">
+            <div className="gantt-label-head">Trade Item</div>
+            {grouped.map(([phase, items]) => (
+              <div key={`label-${phase}`}>
+                <div className="gantt-label-row phase">
+                  <span className="phase-text">{phase}</span>
+                </div>
+                {items.map((item) => {
+                  const tone = barTone(item.colour)
+                  const letter = item.trade_name.slice(0, 1).toUpperCase()
+                  const locked = item.percent_complete >= 100
+                  return (
+                    <div
+                      key={`label-${phase}-${item.trade_name}`}
+                      className={`gantt-label-row ${locked ? 'locked-row' : ''}`}
+                    >
+                      <span
+                        className="label-type"
+                        style={{
+                          background: tone.bg,
+                          color: tone.text,
+                          border: `1px solid ${tone.border}`,
+                        }}
+                      >
+                        {letter}
+                      </span>
+                      <span className="label-name" title={item.trade_name}>
+                        {item.trade_name}
+                      </span>
+                      {locked ? <span className="locked-icon">🔒</span> : null}
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
           </div>
 
-          <div className="overflow-x-auto rounded-xl border border-[#1E2535]">
-            <div className="min-w-[980px]">
-              <div
-                className="grid border-b border-[#1E2535] bg-[#111620]"
-                style={{ gridTemplateColumns: `240px repeat(${weekRange.length}, minmax(38px, 1fr))` }}
-              >
-                <div className="px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-                  Trade
-                </div>
-                {weekRange.map((w) => (
+          <div className="gantt-chart">
+            <div className="chart-head">
+              <div className="chart-head-inner">
+                {monthSpans.map((m) => (
                   <div
-                    key={`week-${w}`}
-                    className="border-l border-[#1E2535] px-1 py-3 text-center text-[10px] font-semibold tracking-wider text-[#94A3B8]"
-                  >
-                    W{w}
-                  </div>
-                ))}
-              </div>
-
-              <div className="relative bg-[#080A0F]">
-                {todayLineLeftPct != null ? (
-                  <div
-                    className="pointer-events-none absolute bottom-0 top-0 z-20 w-[2px]"
+                    key={`month-${m.month}-${m.start}`}
+                    className="month-head"
                     style={{
-                      left: `calc(240px + (${todayLineLeftPct}% * (100% - 240px) / 100))`,
-                      backgroundColor: '#FF3D57',
+                      left: `${(m.start / weekMeta.length) * 100}%`,
                     }}
-                    aria-label="Today marker"
-                  />
-                ) : null}
-
-                {grouped.map(([phase, items]) => (
-                  <div key={phase} className="border-t border-[#1E2535] first:border-t-0">
-                    <div className="bg-[#0C1018] px-4 py-2 text-xs font-semibold tracking-wide text-[#F4A623]">
-                      {phase}
-                    </div>
-                    {items.map((item) => {
-                      const startCol = item.start_week - minWeek + 2
-                      const endCol = item.end_week - minWeek + 3
-                      return (
-                        <div
-                          key={`${phase}-${item.trade_name}`}
-                          className="grid border-t border-[#161b27]"
-                          style={{ gridTemplateColumns: `240px repeat(${weekRange.length}, minmax(38px, 1fr))` }}
-                        >
-                          <div className="px-4 py-3">
-                            <p className="text-sm font-medium text-[#E2E8F8]">{item.trade_name}</p>
-                            <p className="mt-0.5 text-xs text-[#64748B]">
-                              W{item.start_week} → W{item.end_week}
-                            </p>
-                          </div>
-                          <div
-                            className="relative col-span-full row-start-1 ml-[240px] grid h-full"
-                            style={{ gridTemplateColumns: `repeat(${weekRange.length}, minmax(38px, 1fr))` }}
-                          >
-                            {weekRange.map((w) => (
-                              <div key={`${item.trade_name}-cell-${w}`} className="border-l border-[#1E2535]" />
-                            ))}
-                            <div
-                              className="z-10 mx-1 my-2 rounded-full border"
-                              style={{
-                                gridColumn: `${startCol - 1} / ${endCol - 1}`,
-                                borderColor: `${item.colour}80`,
-                                backgroundColor: `${item.colour}2B`,
-                              }}
-                            >
-                              <div
-                                className="h-full rounded-full"
-                                style={{
-                                  width: `${Math.min(100, Math.max(0, item.percent_complete))}%`,
-                                  backgroundColor: item.colour,
-                                }}
-                              />
-                            </div>
-                            <div
-                              className="z-20 mr-2 self-center justify-self-end text-xs font-semibold tabular-nums"
-                              style={{ color: pctColor(item.percent_complete) }}
-                            >
-                              {Math.round(item.percent_complete)}%
-                            </div>
-                          </div>
-                        </div>
-                      )
-                    })}
+                  >
+                    {m.month}
                   </div>
                 ))}
+                {weekMeta.map((w, i) => (
+                  <div
+                    key={`line-${w.week}`}
+                    className={`week-line ${i % 4 === 0 ? 'major' : ''}`}
+                    style={{ left: `${(i / weekMeta.length) * 100}%` }}
+                  />
+                ))}
+                {weekMeta.map((w, i) => (
+                  <div
+                    key={`wk-${w.week}`}
+                    className={`wk-hdr ${w.week === todayWeek ? 'today-wk' : ''}`}
+                    style={{ left: `${((i + 0.5) / weekMeta.length) * 100}%` }}
+                  >
+                    <div className="wk-num">W{w.week}</div>
+                    <div className="wk-date">
+                      {w.date.toLocaleDateString('en-GB', {
+                        day: '2-digit',
+                        month: 'short',
+                        timeZone: 'UTC',
+                      })}
+                    </div>
+                  </div>
+                ))}
+                {todayLineLeftPct != null ? (
+                  <div className="today-line" style={{ left: `${todayLineLeftPct}%` }} />
+                ) : null}
               </div>
+            </div>
+
+            <div className="chart-rows">
+              {todayLineLeftPct != null ? (
+                <div className="today-line" style={{ left: `${todayLineLeftPct}%` }} />
+              ) : null}
+              {grouped.map(([phase, items]) => (
+                <div key={`rows-${phase}`}>
+                  <div className="chart-row phase-row" />
+                  {items.map((item) => {
+                    const tone = barTone(item.colour)
+                    const left = ((item.start_week - minWeek) / weekMeta.length) * 100
+                    const width =
+                      ((item.end_week - item.start_week + 1) / weekMeta.length) * 100
+                    const progWidth = (width * Math.max(0, Math.min(100, item.percent_complete))) / 100
+                    const locked = item.percent_complete >= 100
+                    return (
+                      <div
+                        key={`bar-${phase}-${item.trade_name}`}
+                        className={`chart-row ${locked ? 'locked-row' : ''}`}
+                      >
+                        <div
+                          className="gbar"
+                          style={{
+                            left: `${left}%`,
+                            width: `${width}%`,
+                            background: tone.bg,
+                            border: `1px solid ${tone.border}`,
+                          }}
+                        />
+                        <div
+                          className="gbar-prog"
+                          style={{
+                            left: `${left}%`,
+                            width: `${progWidth}%`,
+                            background: tone.prog,
+                          }}
+                        />
+                        <div className="gbar-text" style={{ left: `calc(${left}% + 5px)` }}>
+                          {Math.round(item.percent_complete)}%
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ))}
             </div>
           </div>
         </div>
-      </div>
 
-      <div
-        className="relative overflow-hidden rounded-xl border"
-        style={{ borderColor: border, backgroundColor: surface }}
-      >
-        <div className="p-5 sm:p-7">
-          <h3 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
-            S-Curve
-          </h3>
-          <p className="mt-1 text-sm text-[#64748B]">
-            Planned vs actual completion by week.
-          </p>
-          <div className="mt-5 overflow-x-auto rounded-xl border border-[#1E2535] bg-[#080A0F] p-4">
-            <svg viewBox="0 0 860 280" className="h-[280px] w-full min-w-[760px]">
-              <rect x="0" y="0" width="860" height="280" fill="transparent" />
+        <div className="scurve-area">
+          <div className="scurve-label">
+            <div className="sc-ttl">S-CURVE</div>
+            <div className="sc-sub">Cashflow drawdown</div>
+          </div>
+          <div className="scurve-canvas-wrap">
+            <svg viewBox="0 0 960 220" className="h-full w-full">
               {[0, 25, 50, 75, 100].map((tick) => {
-                const y = 20 + ((100 - tick) / 100) * 220
+                const y = 10 + ((100 - tick) / 100) * 190
                 return (
-                  <g key={`y-${tick}`}>
-                    <line x1="50" y1={y} x2="830" y2={y} stroke="#1E2535" strokeWidth="1" />
-                    <text x="10" y={y + 4} fill="#64748B" fontSize="11">
-                      {tick}%
-                    </text>
+                  <g key={`scy-${tick}`}>
+                    <line x1="0" y1={y} x2="960" y2={y} stroke="#1E2535" strokeWidth="1" />
                   </g>
                 )
               })}
@@ -1670,52 +1754,346 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                 <>
                   <polyline
                     fill="none"
-                    stroke="#F4A623"
-                    strokeWidth="3"
+                    stroke="rgba(59,139,255,.6)"
+                    strokeWidth="2.5"
                     points={sCurve
                       .map((p, i) => {
-                        const x = 50 + (i / (sCurve.length - 1)) * 780
-                        const y = 20 + ((100 - p.planned) / 100) * 220
+                        const x = (i / (sCurve.length - 1)) * 960
+                        const y = 10 + ((100 - p.planned) / 100) * 190
                         return `${x},${y}`
                       })
                       .join(' ')}
                   />
                   <polyline
                     fill="none"
-                    stroke="#00E676"
+                    stroke="#F4A623"
                     strokeWidth="3"
                     points={sCurve
                       .map((p, i) => {
-                        const x = 50 + (i / (sCurve.length - 1)) * 780
-                        const y = 20 + ((100 - p.actual) / 100) * 220
+                        const x = (i / (sCurve.length - 1)) * 960
+                        const y = 10 + ((100 - p.actual) / 100) * 190
                         return `${x},${y}`
                       })
                       .join(' ')}
                   />
                 </>
               ) : null}
-              {weekRange.map((w, i) => {
-                const x = 50 + (i / Math.max(1, weekRange.length - 1)) * 780
-                return (
-                  <text key={`x-${w}`} x={x} y="268" textAnchor="middle" fill="#64748B" fontSize="10">
-                    W{w}
-                  </text>
-                )
-              })}
             </svg>
-            <div className="mt-3 flex flex-wrap gap-4 text-xs">
-              <span className="inline-flex items-center gap-2 text-[#94A3B8]">
-                <span className="h-2 w-6 rounded-full bg-[#F4A623]" />
-                Planned
-              </span>
-              <span className="inline-flex items-center gap-2 text-[#94A3B8]">
-                <span className="h-2 w-6 rounded-full bg-[#00E676]" />
-                Actual
-              </span>
-            </div>
           </div>
         </div>
       </div>
+
+      <style jsx>{`
+        .pg {
+          color: #e2e8f8;
+        }
+        .combined-wrap {
+          background: #0f1219;
+          border: 1px solid #1e2535;
+          border-radius: 16px;
+          overflow: hidden;
+          margin-bottom: 14px;
+        }
+        .combined-head {
+          padding: 14px 20px;
+          border-bottom: 1px solid #1e2535;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          background: rgba(244, 166, 35, 0.03);
+        }
+        .pt {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 18px;
+          letter-spacing: 2px;
+          color: #f4a623;
+        }
+        .ps {
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          color: #64748b;
+        }
+        .mono-xs {
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+        }
+        .portal-live-panel {
+          margin: 14px 20px 0;
+          background: #0f1219;
+          border: 1px solid #1e2535;
+          border-radius: 12px;
+          padding: 12px;
+        }
+        .plp-title {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 18px;
+          letter-spacing: 1.6px;
+          color: #f8fafc;
+          margin-bottom: 10px;
+        }
+        .portal-live-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+          gap: 8px;
+        }
+        .plp-card {
+          background: #080a0f;
+          border: 1px solid #1e2535;
+          border-radius: 10px;
+          padding: 10px;
+        }
+        .plp-card.warn {
+          background: rgba(255, 61, 87, 0.05);
+          border-color: rgba(255, 61, 87, 0.2);
+        }
+        .plp-card.accent {
+          background: rgba(244, 166, 35, 0.05);
+          border-color: rgba(244, 166, 35, 0.2);
+        }
+        .plp-label {
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          color: #64748b;
+        }
+        .plp-value {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 26px;
+          letter-spacing: 1px;
+          line-height: 1;
+          color: #e2e8f8;
+          margin-top: 4px;
+        }
+        .plp-value.date {
+          color: #ff3d57;
+          font-size: 16px;
+          font-family: 'DM Mono', monospace;
+          letter-spacing: 0.3px;
+        }
+        .plp-sub {
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          color: #64748b;
+          margin-top: 3px;
+        }
+        .combined-body {
+          display: grid;
+          grid-template-columns: 240px 1fr;
+          min-height: 600px;
+        }
+        .gantt-labels {
+          border-right: 1px solid #1e2535;
+          overflow: hidden;
+        }
+        .gantt-label-head {
+          height: 50px;
+          border-bottom: 1px solid #1e2535;
+          background: #080a0f;
+          display: flex;
+          align-items: center;
+          padding: 0 14px;
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          color: #64748b;
+        }
+        .gantt-label-row {
+          height: 28px;
+          display: flex;
+          align-items: center;
+          padding: 0 12px;
+          border-bottom: 1px solid rgba(30, 37, 53, 0.6);
+          transition: background 0.1s;
+          cursor: default;
+          gap: 6px;
+        }
+        .gantt-label-row:hover {
+          background: rgba(255, 255, 255, 0.012);
+        }
+        .gantt-label-row.phase {
+          height: 22px;
+          background: rgba(244, 166, 35, 0.04);
+        }
+        .gantt-label-row.locked-row {
+          background: rgba(0, 230, 118, 0.03);
+        }
+        .phase-text {
+          font-size: 9px;
+          font-family: 'DM Mono', monospace;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          color: #64748b;
+        }
+        .label-name {
+          font-size: 10px;
+          color: #e2e8f8;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          flex: 1;
+        }
+        .label-type {
+          width: 18px;
+          height: 18px;
+          border-radius: 3px;
+          font-size: 8px;
+          font-family: 'DM Mono', monospace;
+          text-align: center;
+          line-height: 18px;
+          flex-shrink: 0;
+        }
+        .locked-icon {
+          font-size: 10px;
+          color: #00e676;
+        }
+        .gantt-chart {
+          position: relative;
+          overflow: hidden;
+          background: #080a0f;
+        }
+        .chart-head {
+          height: 50px;
+          border-bottom: 1px solid #1e2535;
+          background: #080a0f;
+          position: relative;
+          overflow: hidden;
+        }
+        .chart-head-inner {
+          position: absolute;
+          inset: 0;
+        }
+        .month-head {
+          position: absolute;
+          top: 4px;
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 13px;
+          letter-spacing: 1px;
+          color: #4a5568;
+        }
+        .chart-rows {
+          position: relative;
+          overflow-x: hidden;
+          overflow-y: visible;
+        }
+        .chart-row {
+          height: 28px;
+          position: relative;
+          border-bottom: 1px solid rgba(30, 37, 53, 0.6);
+        }
+        .chart-row.phase-row {
+          height: 22px;
+          background: rgba(244, 166, 35, 0.02);
+        }
+        .chart-row.locked-row {
+          background: rgba(0, 230, 118, 0.02);
+        }
+        .gbar,
+        .gbar-prog {
+          position: absolute;
+          height: 14px;
+          top: 7px;
+          border-radius: 3px;
+        }
+        .gbar-prog {
+          opacity: 0.5;
+        }
+        .gbar-text {
+          position: absolute;
+          top: 8px;
+          font-family: 'DM Mono', monospace;
+          font-size: 8px;
+          color: rgba(255, 255, 255, 0.9);
+          z-index: 3;
+          pointer-events: none;
+          white-space: nowrap;
+        }
+        .week-line {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: 1px;
+          background: rgba(30, 37, 53, 0.8);
+          pointer-events: none;
+        }
+        .week-line.major {
+          background: rgba(30, 37, 53, 1.5);
+        }
+        .today-line {
+          position: absolute;
+          top: 0;
+          bottom: 0;
+          width: 2px;
+          background: #ff3d57;
+          opacity: 0.8;
+          pointer-events: none;
+          z-index: 10;
+        }
+        .wk-hdr {
+          position: absolute;
+          top: 20px;
+          transform: translateX(-50%);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          pointer-events: none;
+        }
+        .wk-num {
+          font-family: 'DM Mono', monospace;
+          font-size: 8px;
+          color: #4a5568;
+        }
+        .wk-date {
+          font-family: 'DM Mono', monospace;
+          font-size: 8px;
+          color: #64748b;
+          opacity: 0.7;
+        }
+        .today-wk .wk-num {
+          color: #ff3d57;
+        }
+        .scurve-area {
+          border-top: 1px solid #1e2535;
+          position: relative;
+          background: rgba(0, 0, 0, 0.3);
+          height: 220px;
+        }
+        .scurve-label {
+          position: absolute;
+          left: 0;
+          top: 0;
+          bottom: 0;
+          width: 240px;
+          border-right: 1px solid #1e2535;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          flex-direction: column;
+          gap: 4px;
+          padding: 12px;
+        }
+        .sc-ttl {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 15px;
+          letter-spacing: 2px;
+          color: #f4a623;
+        }
+        .sc-sub {
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          color: #64748b;
+          text-align: center;
+          line-height: 1.5;
+        }
+        .scurve-canvas-wrap {
+          position: absolute;
+          left: 240px;
+          right: 0;
+          top: 0;
+          bottom: 0;
+        }
+      `}</style>
     </div>
   )
 }
