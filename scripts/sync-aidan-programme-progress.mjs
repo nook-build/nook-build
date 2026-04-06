@@ -73,11 +73,9 @@ function weekFromDate(isoDate, projStartDate) {
 
 function buildProgrammeRows(data) {
   const projStart = new Date(data.PROJ_START)
-
-  // Portal only sets phase on first row in each block. Carry forward.
   let currentPhase = 'Phase 1 — Groundworks & Structure'
-
   const rows = []
+
   for (const item of data.ITEMS) {
     if (item.phase) currentPhase = item.phase
 
@@ -122,7 +120,6 @@ async function main() {
   const html = loadPortalHtml()
   const data = extractPortalData(html)
   const rows = buildProgrammeRows(data)
-
   const completeCount = rows.filter((r) => r.percent_complete >= 100).length
 
   const supabase = createClient(url, key)
@@ -152,7 +149,7 @@ async function main() {
   }
 
   console.log(
-    `Synced ${rows.length} programme_items for ${PROJECT_ID}; complete=${completeCount}, active=${rows.filter(r=>r.status==='active').length}, not_started=${rows.filter(r=>r.status==='not_started').length}`,
+    `Synced ${rows.length} programme_items for ${PROJECT_ID}; complete=${completeCount}, active=${rows.filter((r) => r.status === 'active').length}, not_started=${rows.filter((r) => r.status === 'not_started').length}`,
   )
 }
 

@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "seed:aidan-programme": "node --env-file=.env.local scripts/seed-aidan-programme.mjs",
-    "seed:aidan-valuations": "node --env-file=.env.local scripts/seed-aidan-valuations.mjs"
+    "seed:aidan-valuations": "node --env-file=.env.local scripts/seed-aidan-valuations.mjs",
+    "seed:aidan-certificates": "node --env-file=.env.local scripts/seed-aidan-certificates.mjs"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.101.1",

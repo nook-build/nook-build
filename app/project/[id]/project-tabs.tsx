@@ -116,6 +116,17 @@ type ValuationRecord = {
   created_at: string | null
 }
 
+type CertificateRecord = {
+  id: string
+  project_id: string
+  certificate_number: string
+  amount: number | string
+  date_issued: string | null
+  due_date: string | null
+  date_paid: string | null
+  status: string
+}
+
 type MessageRecord = {
   id: string
   project_id: string
@@ -460,6 +471,7 @@ function pctCumulative(r: ValuationRecord) {
 
 function ValuationTab({ project }: { project: ProjectDetail }) {
   const [rows, setRows] = useState<ValuationRecord[]>([])
+  const [certificates, setCertificates] = useState<CertificateRecord[]>([])
   const [programmeItems, setProgrammeItems] = useState<
     { trade_name: string; phase: string }[]
   >([])
@@ -513,6 +525,21 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
         setRows([])
       } else {
         setRows(normalizeValuationRows(data as Record<string, unknown>[]))
+      }
+
+      const { data: cData, error: cErr } = await supabase
+        .from('certificates')
+        .select('*')
+        .eq('project_id', project.id)
+        .order('date_issued', { ascending: true })
+
+      if (!cancelled) {
+        if (cErr) {
+          setLoadError(cErr.message)
+          setCertificates([])
+        } else {
+          setCertificates((cData ?? []) as CertificateRecord[])
+        }
       }
 
       const { data: pData } = await supabase
@@ -602,7 +629,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     return groups
   }, [filteredRows, phaseOrder, phaseForDescription])
 
-  const { contractSum, paidToDate, thisWeekCertificate, outstanding } =
+  const { contractSum, thisWeekCertificate } =
     useMemo(() => {
       const lineSum = filteredRows.reduce((s, r) => s + num(r.contract_value), 0)
       const projectCv =
@@ -610,26 +637,16 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       const contractSum =
         projectCv > 0 ? projectCv : lineSum > 0 ? lineSum : 0
 
-      const paid = rows.reduce(
-        (s, r) =>
-          r.status.toLowerCase() === 'paid' ? s + num(r.amount_due) : s,
-        0,
-      )
-
       const thisWeekCertificate = filteredRows.reduce(
         (s, r) => s + num(r.amount_due),
         0,
       )
 
-      const outstanding = Math.max(0, contractSum - paid)
-
       return {
         contractSum,
-        paidToDate: paid,
         thisWeekCertificate,
-        outstanding,
       }
-    }, [filteredRows, rows, project.contract_value])
+    }, [filteredRows, project.contract_value])
 
   const variationsTotal = num(project.variations_total)
   const revisedContract =
@@ -820,6 +837,25 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
 
   const footerClaimedPct =
     revisedContract > 0 ? (cumulativeDrawnThrough / revisedContract) * 100 : 0
+
+  const certTotalPaid = useMemo(
+    () =>
+      certificates.reduce((s, c) =>
+        (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
+          ? s + num(c.amount)
+          : s,
+      0),
+    [certificates],
+  )
+  const certOutstanding = useMemo(
+    () =>
+      certificates.reduce((s, c) =>
+        (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
+          ? s
+          : s + num(c.amount),
+      0),
+    [certificates],
+  )
 
   async function handleAdd(e: FormEvent) {
     e.preventDefault()
@@ -1354,11 +1390,11 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
             <div className="pt-meta">
               <span>
                 Total Paid:{' '}
-                <span style={{ color: 'var(--gr)' }}>{formatMoneyGBP(paidToDate)}</span>
+                <span style={{ color: 'var(--gr)' }}>{formatMoneyGBP(certTotalPaid)}</span>
               </span>
               <span>
                 Outstanding:{' '}
-                <span style={{ color: 'var(--rd)' }}>{formatMoneyGBP(outstanding)}</span>
+                <span style={{ color: 'var(--rd)' }}>{formatMoneyGBP(certOutstanding)}</span>
               </span>
             </div>
           </div>
@@ -1376,27 +1412,34 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                 </tr>
               </thead>
               <tbody>
-                {rows
-                  .filter((r) => r.status.toLowerCase() === 'paid')
-                  .map((r) => (
-                    <tr key={`pt-${r.id}`}>
-                      <td>{r.week_label}</td>
-                      <td className="td-mono">{formatMoneyGBP(num(r.amount_due))}</td>
-                      <td className="td-mono">
-                        {r.created_at ? formatIsoDateOnly(r.created_at.slice(0, 10)) : '—'}
-                      </td>
-                      <td>—</td>
-                      <td>—</td>
+                {certificates.map((c) => {
+                  const isPaid =
+                    (c.status ?? '').toLowerCase() === 'paid' || Boolean(c.date_paid)
+                  const due = c.due_date ? new Date(c.due_date) : null
+                  const now = new Date()
+                  const overdue = !isPaid && due != null && due.getTime() < now.getTime()
+                  const daysOs =
+                    overdue && due
+                      ? Math.floor((now.getTime() - due.getTime()) / 86400000)
+                      : 0
+                  return (
+                    <tr key={`pt-${c.id}`} style={overdue ? { background: 'rgba(255,61,87,.03)' } : undefined}>
+                      <td>{c.certificate_number}</td>
+                      <td className="td-mono">{formatMoneyGBP(num(c.amount))}</td>
+                      <td className="td-mono">{c.date_issued ? formatIsoDateOnly(c.date_issued.slice(0, 10)) : '—'}</td>
+                      <td className="td-mono">{c.due_date ? formatIsoDateOnly(c.due_date.slice(0, 10)) : '—'}</td>
+                      <td className="td-mono">{c.date_paid ? formatIsoDateOnly(c.date_paid.slice(0, 10)) : '—'}</td>
                       <td>
-                        <span className="badge b-gr">Paid</span>
+                        <span className={`badge ${isPaid ? 'b-gr' : 'b-ac'}`}>{isPaid ? 'PAID' : 'UNPAID'}</span>
                       </td>
-                      <td>—</td>
+                      <td className="td-mono">{daysOs > 0 ? `${daysOs}d` : '—'}</td>
                     </tr>
-                  ))}
-                {rows.filter((r) => r.status.toLowerCase() === 'paid').length === 0 ? (
+                  )
+                })}
+                {certificates.length === 0 ? (
                   <tr>
                     <td colSpan={7} className="val-empty-cell">
-                      No paid certificates yet.
+                      No certificates yet.
                     </td>
                   </tr>
                 ) : null}
