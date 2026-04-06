@@ -6,7 +6,6 @@ import {
   useMemo,
   useState,
   type FormEvent,
-  type ReactNode,
 } from 'react'
 import {
   formatInstantAsDate,
@@ -24,9 +23,16 @@ export type ProjectDetail = {
   id: string
   name: string | null
   address: string | null
+  postcode: string | null
   contract_value: number | null
+  /** Net approved variations vs original contract (+/-). */
+  variations_total: number | null
   start_date: string | null
+  handover_date: string | null
   status: string | null
+  deposit_paid: boolean | null
+  total_delays_days: number | null
+  locked_items_count: number | null
 }
 
 export type PortalSection =
@@ -52,7 +58,7 @@ function renderPortalSection(
 ) {
   switch (section) {
     case 'command-centre':
-      return <OverviewPanel project={project} />
+      return <CommandCentrePanel project={project} />
     case 'documents':
       return <DocumentsTab project={project} />
     case 'valuation':
@@ -82,75 +88,6 @@ function renderPortalSection(
     case 'weekly-reports':
       return <PlaceholderPanel title="Weekly Reports" />
   }
-}
-
-function StatusPill({ status }: { status: string | null }) {
-  const s = (status ?? '—').toLowerCase()
-  const active = s === 'active'
-  return (
-    <span
-      className={`inline-flex rounded-md border px-2.5 py-1 text-xs font-medium uppercase tracking-wide ${
-        active
-          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-          : 'border-[#1E2535] bg-[#080A0F] text-[#94A3B8]'
-      }`}
-    >
-      {status ?? '—'}
-    </span>
-  )
-}
-
-function OverviewPanel({ project }: { project: ProjectDetail }) {
-  const startLabel = formatIsoDateOnly(project.start_date)
-
-  const rows: { label: string; value: ReactNode }[] = [
-    { label: 'Project name', value: project.name ?? 'Untitled project' },
-    { label: 'Site address', value: project.address ?? '—' },
-    {
-      label: 'Contract value',
-      value:
-        project.contract_value != null ? (
-          <span style={{ color: accent }} className="font-semibold tabular-nums">
-            {formatMoneyGBP(Number(project.contract_value))}
-          </span>
-        ) : (
-          '—'
-        ),
-    },
-    { label: 'Start date', value: startLabel },
-    {
-      label: 'Status',
-      value: <StatusPill status={project.status} />,
-    },
-  ]
-
-  return (
-    <div
-      className="relative overflow-hidden rounded-xl border p-6 sm:p-8"
-      style={{ borderColor: border, backgroundColor: surface }}
-    >
-      <div
-        className="absolute left-0 top-0 h-0.5 w-full opacity-90"
-        style={{
-          background: `linear-gradient(90deg, ${accent}, transparent)`,
-        }}
-        aria-hidden
-      />
-      <h2 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
-        Project details
-      </h2>
-      <dl className="mt-6 grid gap-6 sm:grid-cols-2">
-        {rows.map((row) => (
-          <div key={row.label}>
-            <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-              {row.label}
-            </dt>
-            <dd className="mt-2 text-sm text-[#E2E8F8]">{row.value}</dd>
-          </div>
-        ))}
-      </dl>
-    </div>
-  )
 }
 
 const inputClass =
@@ -1306,6 +1243,701 @@ function DocumentsTab({ project }: { project: ProjectDetail }) {
               </table>
             </div>
           ) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function utcMillisFromIsoDate(iso: string | null | undefined): number | null {
+  if (!iso) return null
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso.trim())
+  if (!m) return null
+  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+}
+
+function todayUtcMidnightMs(): number {
+  const n = new Date()
+  return Date.UTC(n.getUTCFullYear(), n.getUTCMonth(), n.getUTCDate())
+}
+
+function timelinePercent(
+  startIso: string | null,
+  endIso: string | null,
+): number | null {
+  const startMs = utcMillisFromIsoDate(startIso)
+  const endMs = utcMillisFromIsoDate(endIso)
+  if (startMs == null || endMs == null) return null
+  if (endMs <= startMs) return null
+  const nowMs = todayUtcMidnightMs()
+  const clamped = Math.min(Math.max(nowMs, startMs), endMs)
+  return ((clamped - startMs) / (endMs - startMs)) * 100
+}
+
+function weeksDurationBetween(
+  startIso: string | null,
+  endIso: string | null,
+): number | null {
+  const startMs = utcMillisFromIsoDate(startIso)
+  const endMs = utcMillisFromIsoDate(endIso)
+  if (startMs == null || endMs == null) return null
+  const days = (endMs - startMs) / 86400000
+  if (days < 0) return null
+  return Math.max(0, Math.round(days / 7))
+}
+
+function weeksUntilHandover(handoverIso: string | null): {
+  weeks: number | null
+  overdue: boolean
+} {
+  const endMs = utcMillisFromIsoDate(handoverIso)
+  if (endMs == null) return { weeks: null, overdue: false }
+  const nowMs = todayUtcMidnightMs()
+  const days = (endMs - nowMs) / 86400000
+  const w = Math.ceil(days / 7)
+  if (w < 0) return { weeks: 0, overdue: true }
+  return { weeks: w, overdue: false }
+}
+
+function extractUkPostcode(text: string | null | undefined): string | null {
+  if (!text?.trim()) return null
+  const re = /([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})/i
+  const m = text.match(re)
+  return m ? m[1].replace(/\s+/g, ' ').trim().toUpperCase() : null
+}
+
+function weatherSearchQuery(project: ProjectDetail): string | null {
+  const p = project.postcode?.trim()
+  if (p) return p
+  return extractUkPostcode(project.address)
+}
+
+function wmoWeatherLabel(code: number): string {
+  if (code === 0) return 'Clear sky'
+  if (code <= 3) return 'Partly cloudy'
+  if (code <= 48) return 'Fog'
+  if (code <= 57) return 'Drizzle'
+  if (code <= 67) return 'Rain'
+  if (code <= 77) return 'Snow'
+  if (code <= 82) return 'Rain showers'
+  if (code <= 86) return 'Snow showers'
+  if (code <= 99) return 'Thunderstorm'
+  return 'Weather'
+}
+
+function formatSignedMoneyGBP(n: number): string {
+  if (n === 0) return formatMoneyGBP(0)
+  const abs = formatMoneyGBP(Math.abs(n))
+  return n < 0 ? `−${abs}` : `+${abs}`
+}
+
+function CommandCentreStatCard({
+  label,
+  value,
+  hint,
+  highlight,
+}: {
+  label: string
+  value: string
+  hint?: string
+  highlight?: boolean
+}) {
+  return (
+    <div
+      className="relative overflow-hidden rounded-xl border px-5 py-5"
+      style={{
+        borderColor: border,
+        backgroundColor: '#080A0F',
+      }}
+    >
+      <div
+        className="absolute left-0 top-0 h-full w-1 rounded-r-full opacity-95"
+        style={{
+          background: highlight ? accent : border,
+        }}
+        aria-hidden
+      />
+      <p className="pl-2 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+        {label}
+      </p>
+      <p
+        className={`mt-2 pl-2 font-semibold tabular-nums tracking-tight ${highlight ? 'text-2xl sm:text-[1.65rem]' : 'text-xl sm:text-2xl'}`}
+        style={highlight ? { color: accent } : { color: '#F8FAFC' }}
+      >
+        {value}
+      </p>
+      {hint ? (
+        <p className="mt-2 pl-2 text-xs text-[#475569]">{hint}</p>
+      ) : null}
+    </div>
+  )
+}
+
+function CommandCentreProgressRow({
+  label,
+  percent,
+  sublabel,
+}: {
+  label: string
+  percent: number | null
+  sublabel?: string
+}) {
+  const pct =
+    percent == null ? null : Math.min(100, Math.max(0, percent))
+  return (
+    <div>
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <span className="text-sm font-medium text-[#E2E8F8]">{label}</span>
+        <span className="text-sm font-semibold tabular-nums text-[#F8FAFC]">
+          {pct != null ? formatPercentDisplay(pct) : '—'}
+        </span>
+      </div>
+      {sublabel ? (
+        <p className="mt-0.5 text-xs text-[#64748B]">{sublabel}</p>
+      ) : null}
+      <div
+        className="mt-2 h-2.5 w-full overflow-hidden rounded-full"
+        style={{ backgroundColor: '#1E2535' }}
+      >
+        <div
+          className="h-2.5 rounded-full transition-[width] duration-500"
+          style={{
+            width: pct != null ? `${pct}%` : '0%',
+            backgroundColor: accent,
+            boxShadow: pct != null && pct > 0 ? '0 0 12px rgba(244,166,35,0.35)' : undefined,
+          }}
+        />
+      </div>
+    </div>
+  )
+}
+
+function CommandCentrePanel({ project }: { project: ProjectDetail }) {
+  const [rows, setRows] = useState<ValuationRecord[]>([])
+  const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState('')
+  const [weather, setWeather] = useState<{
+    loading: boolean
+    error: string
+    label: string
+    temp: number | null
+    code: number | null
+    wind: number | null
+    humidity: number | null
+  }>({
+    loading: false,
+    error: '',
+    label: '',
+    temp: null,
+    code: null,
+    wind: null,
+    humidity: null,
+  })
+
+  useEffect(() => {
+    let cancelled = false
+    async function load() {
+      setLoading(true)
+      setLoadError('')
+      const { data, error } = await supabase
+        .from('valuations')
+        .select('*')
+        .eq('project_id', project.id)
+        .order('line_order', { ascending: true })
+
+      if (cancelled) return
+      if (error) {
+        setLoadError(error.message)
+        setRows([])
+      } else {
+        setRows((data ?? []) as ValuationRecord[])
+      }
+      setLoading(false)
+    }
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [project.id])
+
+  useEffect(() => {
+    const q = weatherSearchQuery(project)
+    if (!q) {
+      setWeather((w) => ({
+        ...w,
+        loading: false,
+        error: '',
+        label: '',
+        temp: null,
+        code: null,
+        wind: null,
+        humidity: null,
+      }))
+      return
+    }
+
+    const searchQuery = q
+    const ac = new AbortController()
+    setWeather((w) => ({ ...w, loading: true, error: '' }))
+
+    async function run() {
+      try {
+        const geoRes = await fetch(
+          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(searchQuery)}&count=1&language=en&format=json`,
+          { signal: ac.signal },
+        )
+        if (!geoRes.ok) throw new Error('Geocoding request failed')
+        const geo = (await geoRes.json()) as {
+          results?: { latitude: number; longitude: number; name: string }[]
+        }
+        const hit = geo.results?.[0]
+        if (!hit) throw new Error('Could not resolve location')
+
+        const wxRes = await fetch(
+          `https://api.open-meteo.com/v1/forecast?latitude=${hit.latitude}&longitude=${hit.longitude}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&timezone=Europe%2FLondon&forecast_days=1`,
+          { signal: ac.signal },
+        )
+        if (!wxRes.ok) throw new Error('Weather request failed')
+        const wx = (await wxRes.json()) as {
+          current?: {
+            temperature_2m?: number
+            weather_code?: number
+            wind_speed_10m?: number
+            relative_humidity_2m?: number
+          }
+        }
+        const cur = wx.current
+        if (!cur) throw new Error('No current weather')
+
+        setWeather({
+          loading: false,
+          error: '',
+          label: hit.name,
+          temp:
+            typeof cur.temperature_2m === 'number'
+              ? cur.temperature_2m
+              : null,
+          code:
+            typeof cur.weather_code === 'number' ? cur.weather_code : null,
+          wind:
+            typeof cur.wind_speed_10m === 'number'
+              ? cur.wind_speed_10m
+              : null,
+          humidity:
+            typeof cur.relative_humidity_2m === 'number'
+              ? cur.relative_humidity_2m
+              : null,
+        })
+      } catch (e) {
+        if (ac.signal.aborted) return
+        setWeather({
+          loading: false,
+          error: e instanceof Error ? e.message : 'Weather unavailable',
+          label: '',
+          temp: null,
+          code: null,
+          wind: null,
+          humidity: null,
+        })
+      }
+    }
+
+    void run()
+    return () => ac.abort()
+  }, [project.postcode, project.address])
+
+  const weekOpts = useMemo(() => weekOptionsFromRows(rows), [rows])
+  const latestPeriod = weekOpts[0] ?? null
+  const latestRows = useMemo(() => {
+    if (!latestPeriod) return []
+    return rows
+      .filter((r) => r.week_label === latestPeriod)
+      .sort((a, b) => a.line_order - b.line_order)
+  }, [rows, latestPeriod])
+
+  const contractSum = useMemo(() => {
+    const lineSum = latestRows.reduce((s, r) => s + num(r.contract_value), 0)
+    const projectCv =
+      project.contract_value != null ? num(project.contract_value) : 0
+    if (projectCv > 0) return projectCv
+    if (lineSum > 0) return lineSum
+    return 0
+  }, [latestRows, project.contract_value])
+
+  const variationsTotal = num(project.variations_total)
+  const revisedContract =
+    contractSum > 0 ? contractSum + variationsTotal : null
+
+  const totalDrawn = useMemo(() => {
+    return rows.reduce(
+      (s, r) =>
+        r.status.toLowerCase() === 'paid' ? s + num(r.amount_due) : s,
+      0,
+    )
+  }, [rows])
+
+  const remaining =
+    revisedContract != null && revisedContract > 0
+      ? Math.max(0, revisedContract - totalDrawn)
+      : null
+
+  const completionPct = weightedValuePercent(latestRows, pctCumulative)
+
+  const timelinePct = useMemo(
+    () => timelinePercent(project.start_date, project.handover_date),
+    [project.start_date, project.handover_date],
+  )
+
+  const paymentsPct =
+    revisedContract != null && revisedContract > 0
+      ? (totalDrawn / revisedContract) * 100
+      : null
+
+  const durationWeeks = useMemo(
+    () => weeksDurationBetween(project.start_date, project.handover_date),
+    [project.start_date, project.handover_date],
+  )
+
+  const handoverWeeks = useMemo(
+    () => weeksUntilHandover(project.handover_date),
+    [project.handover_date],
+  )
+
+  const originalContract = project.contract_value
+  const delaysDaysRaw = project.total_delays_days
+  const lockedItems = project.locked_items_count ?? 0
+
+  const currentWeekDisplay = latestPeriod ?? '—'
+
+  const handoverStat =
+    handoverWeeks.weeks == null
+      ? '—'
+      : handoverWeeks.overdue
+        ? '0 (overdue)'
+        : String(handoverWeeks.weeks)
+
+  return (
+    <div className="space-y-8">
+      <div
+        className="relative overflow-hidden rounded-xl border"
+        style={{ borderColor: border, backgroundColor: surface }}
+      >
+        <div
+          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
+          style={{
+            background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
+          }}
+          aria-hidden
+        />
+        <div className="p-5 sm:p-7">
+          <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
+            COMMAND CENTRE
+          </p>
+          <h2 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC] sm:text-xl">
+            Live programme & commercial position
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-[#64748B]">
+            Contract, cash, build progress, key dates, and site weather — aligned
+            with your valuation and project records in Supabase.
+          </p>
+        </div>
+      </div>
+
+      {loadError ? (
+        <div
+          className="rounded-lg border border-red-900/40 bg-red-950/25 px-4 py-3 text-sm text-red-200"
+          role="alert"
+        >
+          Could not load valuations: {loadError}
+        </div>
+      ) : null}
+
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <CommandCentreStatCard
+          label="Contract value"
+          value={
+            loading
+              ? '…'
+              : contractSum > 0
+                ? formatMoneyGBP(contractSum)
+                : '—'
+          }
+          hint="Original / baseline sum"
+          highlight
+        />
+        <CommandCentreStatCard
+          label="Total drawn"
+          value={loading ? '…' : formatMoneyGBP(totalDrawn)}
+          hint="Paid valuation lines (all periods)"
+        />
+        <CommandCentreStatCard
+          label="Remaining"
+          value={
+            loading
+              ? '…'
+              : remaining != null
+                ? formatMoneyGBP(remaining)
+                : '—'
+          }
+          hint="Revised contract less drawn"
+        />
+        <CommandCentreStatCard
+          label="Current week"
+          value={loading ? '…' : currentWeekDisplay}
+          hint={
+            latestPeriod ? 'Latest valuation period' : 'No valuation periods yet'
+          }
+        />
+        <CommandCentreStatCard
+          label="Weeks to handover"
+          value={loading ? '…' : handoverStat}
+          hint={
+            handoverWeeks.overdue
+              ? 'Past planned handover date'
+              : 'From today to handover (calendar weeks)'
+          }
+        />
+        <CommandCentreStatCard
+          label="Items locked"
+          value={loading ? '…' : String(lockedItems)}
+          hint="Locked / frozen items on record"
+        />
+      </div>
+
+      <div
+        className="relative overflow-hidden rounded-xl border"
+        style={{ borderColor: border, backgroundColor: surface }}
+      >
+        <div
+          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
+          style={{
+            background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
+          }}
+          aria-hidden
+        />
+        <div className="space-y-6 p-5 sm:p-7">
+          <div>
+            <h3 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
+              Progress
+            </h3>
+            <p className="mt-1 text-sm text-[#64748B]">
+              Timeline, payments position, and build completion from the latest
+              valuation period.
+            </p>
+          </div>
+          <CommandCentreProgressRow
+            label="Timeline"
+            percent={timelinePct}
+            sublabel="Elapsed programme vs start → handover"
+          />
+          <CommandCentreProgressRow
+            label="Payments (drawn to date)"
+            percent={paymentsPct}
+            sublabel="Paid certificates vs revised contract value"
+          />
+          <CommandCentreProgressRow
+            label="Completion (build progress)"
+            percent={completionPct}
+            sublabel="Weighted cumulative % (latest period lines)"
+          />
+        </div>
+      </div>
+
+      <div
+        className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4"
+        style={{ borderColor: border }}
+      >
+        {[
+          {
+            k: 'Start date',
+            v: formatIsoDateOnly(project.start_date),
+          },
+          {
+            k: 'Handover date',
+            v: formatIsoDateOnly(project.handover_date),
+          },
+          {
+            k: 'Duration (weeks)',
+            v: durationWeeks != null ? String(durationWeeks) : '—',
+          },
+          {
+            k: 'Deposit paid',
+            v:
+              project.deposit_paid === true
+                ? 'Yes'
+                : project.deposit_paid === false
+                  ? 'No'
+                  : '—',
+          },
+        ].map((row) => (
+          <div
+            key={row.k}
+            className="relative overflow-hidden rounded-xl border px-5 py-4"
+            style={{ borderColor: border, backgroundColor: '#080A0F' }}
+          >
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+              {row.k}
+            </p>
+            <p
+              className="mt-2 text-lg font-semibold tabular-nums text-[#F8FAFC]"
+              style={
+                row.k === 'Deposit paid' && row.v === 'Yes'
+                  ? { color: accent }
+                  : undefined
+              }
+            >
+              {row.v}
+            </p>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-4 lg:grid-cols-2">
+        <div
+          className="relative overflow-hidden rounded-xl border"
+          style={{ borderColor: border, backgroundColor: surface }}
+        >
+          <div
+            className="absolute left-0 top-0 h-0.5 w-full opacity-90"
+            style={{
+              background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
+            }}
+            aria-hidden
+          />
+          <div className="p-5 sm:p-7">
+            <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
+              LIVE WEATHER
+            </p>
+            <h3 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC]">
+              Site conditions
+            </h3>
+            <p className="mt-1 text-sm text-[#64748B]">
+              Open-Meteo forecast for{' '}
+              <span style={{ color: accent }} className="font-medium">
+                {weatherSearchQuery(project) ?? 'add a UK postcode'}
+              </span>
+            </p>
+
+            {weather.loading ? (
+              <p className="mt-8 text-sm text-[#64748B]">Loading weather…</p>
+            ) : weather.error ? (
+              <p
+                className="mt-6 rounded-lg border border-amber-900/35 bg-amber-950/20 px-4 py-3 text-sm text-amber-100"
+                role="status"
+              >
+                {weather.error}
+              </p>
+            ) : weather.temp != null && weather.code != null ? (
+              <div className="mt-6 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-4xl font-semibold tabular-nums tracking-tight text-[#F8FAFC]">
+                    {Math.round(weather.temp)}
+                    <span className="text-2xl text-[#94A3B8]">°C</span>
+                  </p>
+                  <p className="mt-1 text-sm font-medium text-[#E2E8F8]">
+                    {wmoWeatherLabel(weather.code)}
+                  </p>
+                  {weather.label ? (
+                    <p className="mt-1 text-xs text-[#64748B]">{weather.label}</p>
+                  ) : null}
+                </div>
+                <dl className="grid gap-2 text-sm text-[#94A3B8] sm:text-right">
+                  {weather.wind != null ? (
+                    <div>
+                      <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+                        Wind
+                      </dt>
+                      <dd className="tabular-nums text-[#E2E8F8]">
+                        {weather.wind.toFixed(0)} km/h
+                      </dd>
+                    </div>
+                  ) : null}
+                  {weather.humidity != null ? (
+                    <div>
+                      <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+                        Humidity
+                      </dt>
+                      <dd className="tabular-nums text-[#E2E8F8]">
+                        {Math.round(weather.humidity)}%
+                      </dd>
+                    </div>
+                  ) : null}
+                </dl>
+              </div>
+            ) : (
+              <p className="mt-6 text-sm text-[#64748B]">
+                Add a postcode on the project (or include one in the site address)
+                to load live weather.
+              </p>
+            )}
+          </div>
+        </div>
+
+        <div
+          className="relative overflow-hidden rounded-xl border"
+          style={{ borderColor: border, backgroundColor: surface }}
+        >
+          <div
+            className="absolute left-0 top-0 h-0.5 w-full opacity-90"
+            style={{
+              background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
+            }}
+            aria-hidden
+          />
+          <div className="p-5 sm:p-7">
+            <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
+              LIVE PROJECT SUMMARY
+            </p>
+            <h3 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC]">
+              Commercial snapshot
+            </h3>
+            <dl className="mt-6 space-y-4">
+              <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#1E2535] pb-4">
+                <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+                  Original contract
+                </dt>
+                <dd
+                  className="text-right text-lg font-semibold tabular-nums"
+                  style={{ color: accent }}
+                >
+                  {originalContract != null
+                    ? formatMoneyGBP(num(originalContract))
+                    : '—'}
+                </dd>
+              </div>
+              <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#1E2535] pb-4">
+                <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+                  Variations total
+                </dt>
+                <dd className="text-right text-lg font-semibold tabular-nums text-[#F8FAFC]">
+                  {formatSignedMoneyGBP(variationsTotal)}
+                </dd>
+              </div>
+              <div className="flex flex-wrap items-baseline justify-between gap-2 border-b border-[#1E2535] pb-4">
+                <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+                  Revised contract value
+                </dt>
+                <dd
+                  className="text-right text-lg font-semibold tabular-nums"
+                  style={{ color: accent }}
+                >
+                  {revisedContract != null && revisedContract > 0
+                    ? formatMoneyGBP(revisedContract)
+                    : '—'}
+                </dd>
+              </div>
+              <div className="flex flex-wrap items-baseline justify-between gap-2">
+                <dt className="text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
+                  Total delays
+                </dt>
+                <dd className="text-right text-lg font-semibold tabular-nums text-[#F8FAFC]">
+                  {delaysDaysRaw == null
+                    ? '—'
+                    : `${delaysDaysRaw} day${delaysDaysRaw === 1 ? '' : 's'}`}
+                </dd>
+              </div>
+            </dl>
+          </div>
         </div>
       </div>
     </div>

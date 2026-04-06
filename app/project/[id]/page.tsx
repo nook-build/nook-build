@@ -15,7 +15,9 @@ export default async function ProjectPage({ params }: PageProps) {
 
   const { data, error } = await supabase
     .from('projects')
-    .select('id, name, address, contract_value, start_date, status')
+    .select(
+      'id, name, address, postcode, contract_value, variations_total, start_date, handover_date, status, deposit_paid, total_delays_days, locked_items_count',
+    )
     .eq('id', id)
     .maybeSingle()
 
