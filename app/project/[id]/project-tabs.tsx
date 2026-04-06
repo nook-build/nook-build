@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   type FormEvent,
+  type ReactNode,
 } from 'react'
 import {
   formatInstantAsDate,
@@ -2471,6 +2472,16 @@ function CommandCentreProgressRow({
 }
 
 function CommandCentrePanel({ project }: { project: ProjectDetail }) {
+  const [activeTab, setActiveTab] = useState<
+    | 'overview'
+    | 'programme'
+    | 'valuation'
+    | 'cumulative'
+    | 'delays'
+    | 'variations'
+    | 'on-track'
+    | 'building-control'
+  >('overview')
   const [rows, setRows] = useState<ValuationRecord[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
@@ -2647,7 +2658,18 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         ? '0 (overdue)'
         : String(handoverWeeks.weeks)
 
-  return (
+  const topTabs = [
+    { id: 'overview', label: 'OVERVIEW' },
+    { id: 'programme', label: 'PROGRAMME + S-CURVE' },
+    { id: 'valuation', label: 'VALUATION & DRAWDOWN' },
+    { id: 'cumulative', label: 'CUMULATIVE' },
+    { id: 'delays', label: 'DELAYS & PAUSES' },
+    { id: 'variations', label: 'VARIATIONS' },
+    { id: 'on-track', label: 'ON TRACK' },
+    { id: 'building-control', label: 'BUILDING CONTROL' },
+  ] as const
+
+  const overviewContent = (
     <div className="space-y-8">
       <div
         className="relative overflow-hidden rounded-xl border"
@@ -2978,6 +3000,143 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           </div>
         </div>
       </div>
+    </div>
+  )
+
+  function CommandCentreCumulativeTab() {
+    const cumulativeCert = rows.reduce((s, r) => s + num(r.cumulative_total), 0)
+    const cumulativeDrawn = rows.reduce((s, r) => s + num(r.amount_due), 0)
+    return (
+      <div className="rounded-xl border p-5 sm:p-7" style={{ borderColor: border, backgroundColor: surface }}>
+        <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">CUMULATIVE</p>
+        <h3 className="mt-1 text-lg font-semibold text-[#F8FAFC]">Cumulative drawdown</h3>
+        <div className="mt-5 grid gap-4 sm:grid-cols-3">
+          <CommandCentreStatCard label="Certificates Total" value={formatMoneyGBP(cumulativeCert)} valueColor={accent} />
+          <CommandCentreStatCard label="Drawn Total" value={formatMoneyGBP(cumulativeDrawn)} valueColor={success} />
+          <CommandCentreStatCard label="Live Rows" value={String(rows.length)} valueColor={infoBlue} />
+        </div>
+      </div>
+    )
+  }
+
+  function CommandCentreSimpleTab({
+    title,
+    subtitle,
+    tone = accent,
+  }: {
+    title: string
+    subtitle: string
+    tone?: string
+  }) {
+    return (
+      <div className="rounded-xl border p-6 text-center sm:p-10" style={{ borderColor: border, backgroundColor: surface }}>
+        <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">{title.toUpperCase()}</p>
+        <h3 className="mt-2 text-xl font-semibold text-[#F8FAFC]">{title}</h3>
+        <p className="mx-auto mt-2 max-w-2xl text-sm text-[#64748B]">{subtitle}</p>
+        <div className="mx-auto mt-4 h-1 w-24 rounded-full" style={{ backgroundColor: tone }} />
+      </div>
+    )
+  }
+
+  let content: ReactNode
+  switch (activeTab) {
+    case 'overview':
+      content = overviewContent
+      break
+    case 'programme':
+      content = <ProgrammeTab project={project} />
+      break
+    case 'valuation':
+      content = <ValuationTab project={project} />
+      break
+    case 'cumulative':
+      content = <CommandCentreCumulativeTab />
+      break
+    case 'delays':
+      content = (
+        <CommandCentreSimpleTab
+          title="Delays & Pauses"
+          subtitle="Track pause events, approved EOT impacts, and recovery actions in a single timeline view."
+          tone={danger}
+        />
+      )
+      break
+    case 'variations':
+      content = (
+        <CommandCentreSimpleTab
+          title="Variations"
+          subtitle="Review approved and pending variations with value, programme effect, and client decision status."
+          tone={accent}
+        />
+      )
+      break
+    case 'on-track':
+      content = (
+        <CommandCentreSimpleTab
+          title="On Track"
+          subtitle="RAG overview of milestones, trade readiness, and commercial health against the baseline plan."
+          tone={success}
+        />
+      )
+      break
+    case 'building-control':
+      content = <PlaceholderPanel title="Building Control" />
+      break
+    default:
+      content = overviewContent
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded-xl border" style={{ borderColor: border, backgroundColor: surface }}>
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b px-5 py-4 sm:px-7" style={{ borderColor: border }}>
+          <div>
+            <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">NOOK BUILD</p>
+            <h2 className="mt-0.5 text-lg font-semibold tracking-tight text-[#F8FAFC] sm:text-xl">
+              COMMAND CENTRE
+            </h2>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="rounded-md border px-3 py-1.5 font-mono text-[11px] uppercase tracking-wider text-[#94A3B8] transition hover:text-[#E2E8F8]"
+              style={{ borderColor: border, backgroundColor: '#080A0F' }}
+            >
+              Certificate
+            </button>
+            <button
+              type="button"
+              className="rounded-md border px-3 py-1.5 font-mono text-[11px] uppercase tracking-wider text-[#94A3B8] transition hover:text-[#E2E8F8]"
+              style={{ borderColor: border, backgroundColor: '#080A0F' }}
+            >
+              Print
+            </button>
+          </div>
+        </div>
+        <div className="overflow-x-auto border-b px-3 sm:px-5" style={{ borderColor: border, backgroundColor: '#080A0F' }}>
+          <div className="flex min-w-max gap-5">
+            {topTabs.map((tab) => {
+              const active = activeTab === tab.id
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  onClick={() => setActiveTab(tab.id)}
+                  className="relative py-3 font-mono text-[10px] uppercase tracking-[0.12em] transition"
+                  style={{ color: active ? accent : '#64748B' }}
+                >
+                  {tab.label}
+                  {active ? (
+                    <span className="absolute inset-x-0 bottom-0 h-[2px]" style={{ backgroundColor: accent }} />
+                  ) : null}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      </div>
+
+      {content}
     </div>
   )
 }
