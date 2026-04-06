@@ -257,6 +257,62 @@ function num(v: number | string | null | undefined) {
   return Number.isFinite(n) ? n : 0
 }
 
+/** Maps legacy `week_number` (Aidan portal) to display week_label when `week_label` is absent. */
+const VALUATION_WEEK_NUM_TO_LABEL: Record<number, string> = {
+  1: '9 Mar 26 — 15 Mar 26',
+  2: '16 Mar 26 — 22 Mar 26',
+  3: '23 Mar 26 — 29 Mar 26',
+}
+
+function normalizeValuationRow(raw: Record<string, unknown>): ValuationRecord {
+  const weekNumber =
+    raw.week_number != null && raw.week_number !== ''
+      ? Number(raw.week_number)
+      : null
+  let weekLabel = ''
+  if (typeof raw.week_label === 'string' && raw.week_label.trim() !== '') {
+    weekLabel = raw.week_label
+  } else if (
+    weekNumber != null &&
+    VALUATION_WEEK_NUM_TO_LABEL[weekNumber] != null
+  ) {
+    weekLabel = VALUATION_WEEK_NUM_TO_LABEL[weekNumber]
+  } else if (weekNumber != null) {
+    weekLabel = `Week ${weekNumber}`
+  }
+  const desc = (raw.description ?? raw.item_name ?? null) as string | null
+  return {
+    id: String(raw.id),
+    project_id: String(raw.project_id),
+    week_label: weekLabel,
+    description: desc,
+    contract_value: (raw.contract_value ?? null) as number | string | null,
+    percent_complete: (raw.percent_complete ?? raw.percentage ?? null) as
+      | number
+      | string
+      | null,
+    cumulative_percent: (raw.cumulative_percent ?? null) as
+      | number
+      | string
+      | null,
+    amount_due: num(
+      (raw.amount_due ?? raw.amount) as number | string | null | undefined,
+    ),
+    cumulative_total: num(
+      raw.cumulative_total as number | string | null | undefined,
+    ),
+    status: String(raw.status ?? 'unpaid'),
+    line_order: Number(raw.line_order ?? 0),
+    created_at: (raw.created_at as string | null) ?? null,
+  }
+}
+
+function normalizeValuationRows(
+  rows: Record<string, unknown>[] | null | undefined,
+): ValuationRecord[] {
+  return (rows ?? []).map((r) => normalizeValuationRow(r))
+}
+
 function weekOptionsFromRows(rows: ValuationRecord[]): string[] {
   const latest = new Map<string, number>()
   for (const r of rows) {
@@ -458,7 +514,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
         setLoadError(error.message)
         setRows([])
       } else {
-        setRows((data ?? []) as ValuationRecord[])
+        setRows(normalizeValuationRows(data as Record<string, unknown>[]))
       }
 
       const { data: pData } = await supabase
@@ -631,7 +687,23 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       .select('*')
       .eq('project_id', project.id)
       .order('line_order', { ascending: true })
-    if (!error && data) setRows(data as ValuationRecord[])
+    if (!error && data) {
+      setRows(normalizeValuationRows(data as Record<string, unknown>[]))
+    }
+  }
+
+  function resolveWeekNumberForInsert(
+    weekLabel: string,
+    weeks: string[],
+  ): number {
+    const idx = weeks.indexOf(weekLabel)
+    if (idx >= 0) return idx + 1
+    for (const [n, lab] of Object.entries(VALUATION_WEEK_NUM_TO_LABEL)) {
+      if (lab === weekLabel) return Number(n)
+    }
+    const m = /WEEK\s*(\d+)/i.exec(weekLabel)
+    if (m) return Math.min(52, Math.max(1, parseInt(m[1], 10)))
+    return Math.max(1, weeks.length + 1)
   }
 
   async function updateRowPct(r: ValuationRecord, pct: number) {
@@ -639,7 +711,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     const amt = Math.round(((cv * pct) / 100) * 100) / 100
     const { error } = await supabase
       .from('valuations')
-      .update({ percent_complete: pct, amount_due: amt })
+      .update({ percentage: pct, amount: amt })
       .eq('id', r.id)
     if (error) void error
     else void refetchRows()
@@ -699,7 +771,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       if (lockedIds.has(r.id)) continue
       await supabase
         .from('valuations')
-        .update({ percent_complete: 0, amount_due: 0 })
+        .update({ percentage: 0, amount: 0 })
         .eq('id', r.id)
     }
     void refetchRows()
@@ -798,16 +870,16 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     const nextOrder = last ? last.line_order + 1 : 1
 
     setSaving(true)
+    const wn = resolveWeekNumberForInsert(weekLabel.trim(), chronWeeks)
     const { error } = await supabase.from('valuations').insert({
       project_id: project.id,
-      week_label: weekLabel.trim(),
-      description: description.trim(),
+      week_number: wn,
+      item_name: description.trim(),
       contract_value: contractNum,
-      percent_complete: pctWeek,
+      percentage: pctWeek ?? 0,
       cumulative_percent: cumPct,
-      amount_due: amount,
-      cumulative_total: 0,
-      status: lineStatus,
+      amount,
+      locked: false,
       line_order: nextOrder,
     })
     setSaving(false)
@@ -834,7 +906,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       .order('line_order', { ascending: true })
 
     if (!refetchError && data) {
-      setRows(data as ValuationRecord[])
+      setRows(normalizeValuationRows(data as Record<string, unknown>[]))
     }
   }
 
@@ -2914,7 +2986,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
         setValuationLoadError(error.message)
         setValuationRows([])
       } else {
-        setValuationRows((data ?? []) as ValuationRecord[])
+        setValuationRows(normalizeValuationRows(data as Record<string, unknown>[]))
       }
     }
     void loadValuations()
@@ -4148,7 +4220,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         setLoadError(error.message)
         setRows([])
       } else {
-        setRows((data ?? []) as ValuationRecord[])
+        setRows(normalizeValuationRows(data as Record<string, unknown>[]))
       }
       setLoading(false)
     }
