@@ -4261,6 +4261,10 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const [bcInspector, setBcInspector] = useState('')
   const [bcResult, setBcResult] = useState<'pass' | 'fail' | 'advisory'>('pass')
   const [bcNotes, setBcNotes] = useState('')
+  const [overviewApprovedVariationsSum, setOverviewApprovedVariationsSum] =
+    useState<number | null>(null)
+  const [overviewVariationsLoading, setOverviewVariationsLoading] =
+    useState(false)
 
   useEffect(() => {
     let cancelled = false
@@ -4349,6 +4353,37 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       cancelled = true
     }
   }, [project.id])
+
+  useEffect(() => {
+    if (activeTab !== 'overview') return
+    let cancelled = false
+    async function loadApprovedVariationsTotal() {
+      setOverviewVariationsLoading(true)
+      const { data, error } = await supabase
+        .from('variations')
+        .select('value')
+        .eq('project_id', project.id)
+        .eq('status', 'approved')
+      if (cancelled) return
+      if (error) {
+        setLoadError((prev) => (prev ? `${prev} · ${error.message}` : error.message))
+        setOverviewApprovedVariationsSum(0)
+        setOverviewVariationsLoading(false)
+        return
+      }
+      const sum = (data ?? []).reduce(
+        (s, row: { value: string | number | null | undefined }) =>
+          s + num(row.value),
+        0,
+      )
+      setOverviewApprovedVariationsSum(sum)
+      setOverviewVariationsLoading(false)
+    }
+    void loadApprovedVariationsTotal()
+    return () => {
+      cancelled = true
+    }
+  }, [activeTab, project.id])
 
   useEffect(() => {
     const ac = new AbortController()
@@ -4463,6 +4498,22 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const paymentsPct =
     revisedContract != null && revisedContract > 0
       ? (totalDrawn / revisedContract) * 100
+      : null
+
+  const overviewRevisedContract = useMemo(() => {
+    if (project.contract_value == null) return null
+    if (overviewApprovedVariationsSum == null) return null
+    return num(project.contract_value) + overviewApprovedVariationsSum
+  }, [project.contract_value, overviewApprovedVariationsSum])
+
+  const overviewRemaining =
+    overviewRevisedContract != null && overviewRevisedContract > 0
+      ? Math.max(0, overviewRevisedContract - totalDrawn)
+      : null
+
+  const overviewPaymentsPct =
+    overviewRevisedContract != null && overviewRevisedContract > 0
+      ? (totalDrawn / overviewRevisedContract) * 100
       : null
 
   const durationWeeks = useMemo(
@@ -4838,12 +4889,22 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           <div className="sv" style={{ color: 'var(--gr)' }}>
             {loading ? '…' : formatMoneyGBP(totalDrawn)}
           </div>
-          <div className="ss">{paymentsPct != null ? `${paymentsPct.toFixed(1)}%` : '—'}</div>
+          <div className="ss">
+            {loading || overviewVariationsLoading
+              ? '…'
+              : overviewPaymentsPct != null
+                ? `${overviewPaymentsPct.toFixed(1)}%`
+                : '—'}
+          </div>
         </div>
         <div className="sc b">
           <div className="sl">Remaining</div>
           <div className="sv" style={{ color: 'var(--bl)' }}>
-            {loading ? '…' : remaining != null ? formatMoneyGBP(remaining) : '—'}
+            {loading || overviewVariationsLoading
+              ? '…'
+              : overviewRemaining != null
+                ? formatMoneyGBP(overviewRemaining)
+                : '—'}
           </div>
           <div className="ss">to draw</div>
         </div>
@@ -4906,23 +4967,35 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         <div className="bc bg">
           <div className="btop">
             <div><div className="blab">Payments</div><div className="bnam" style={{ color: 'var(--gr)' }}>DRAWN TO DATE</div></div>
-            <div className="bpct" style={{ color: 'var(--gr)' }}>{paymentsPct != null ? `${paymentsPct.toFixed(0)}%` : '—'}</div>
+            <div className="bpct" style={{ color: 'var(--gr)' }}>
+              {loading || overviewVariationsLoading
+                ? '…'
+                : overviewPaymentsPct != null
+                  ? `${overviewPaymentsPct.toFixed(0)}%`
+                  : '—'}
+            </div>
           </div>
           <div className="btrack">
             <div className="bbar">
-              <div className="bfill" style={{ width: `${Math.max(0, Math.min(100, paymentsPct ?? 0))}%`, background: 'linear-gradient(90deg,#007A6B,#00E676,#80FFB8)' }} />
+              <div
+                className="bfill"
+                style={{
+                  width: `${Math.max(0, Math.min(100, overviewPaymentsPct ?? 0))}%`,
+                  background: 'linear-gradient(90deg,#007A6B,#00E676,#80FFB8)',
+                }}
+              />
             </div>
             <div className="btick" />
           </div>
           <div className="bstats">
             <div className="bstat"><div className="bstat-l">Drawn</div><div className="bstat-v" style={{ color: 'var(--gr)' }}>{formatMoneyGBP(totalDrawn).replace(',000','k')}</div></div>
-            <div className="bstat"><div className="bstat-l">Contract</div><div className="bstat-v" style={{ color: 'var(--mu)' }}>{revisedContract != null ? formatMoneyGBP(revisedContract).replace(',000','k') : '—'}</div></div>
-            <div className="bstat"><div className="bstat-l">Remaining</div><div className="bstat-v" style={{ color: 'var(--rd)' }}>{remaining != null ? formatMoneyGBP(remaining).replace(',000','k') : '—'}</div></div>
+            <div className="bstat"><div className="bstat-l">Contract</div><div className="bstat-v" style={{ color: 'var(--mu)' }}>{loading || overviewVariationsLoading ? '…' : overviewRevisedContract != null ? formatMoneyGBP(overviewRevisedContract).replace(',000','k') : '—'}</div></div>
+            <div className="bstat"><div className="bstat-l">Remaining</div><div className="bstat-v" style={{ color: 'var(--rd)' }}>{loading || overviewVariationsLoading ? '…' : overviewRemaining != null ? formatMoneyGBP(overviewRemaining).replace(',000','k') : '—'}</div></div>
           </div>
           <div className="split-row">
-            <div className="split-cell"><div className="split-l">% CLAIMED</div><div className="split-v" style={{ color: 'var(--gr)' }}>{paymentsPct != null ? `${paymentsPct.toFixed(0)}%` : '—'}</div></div>
+            <div className="split-cell"><div className="split-l">% CLAIMED</div><div className="split-v" style={{ color: 'var(--gr)' }}>{loading || overviewVariationsLoading ? '…' : overviewPaymentsPct != null ? `${overviewPaymentsPct.toFixed(0)}%` : '—'}</div></div>
             <div className="split-sep" />
-            <div className="split-cell"><div className="split-l">% LEFT</div><div className="split-v" style={{ color: 'var(--rd)' }}>{paymentsPct != null ? `${(100 - Math.max(0, Math.min(100, paymentsPct))).toFixed(0)}%` : '—'}</div></div>
+            <div className="split-cell"><div className="split-l">% LEFT</div><div className="split-v" style={{ color: 'var(--rd)' }}>{loading || overviewVariationsLoading ? '…' : overviewPaymentsPct != null ? `${(100 - Math.max(0, Math.min(100, overviewPaymentsPct))).toFixed(0)}%` : '—'}</div></div>
           </div>
         </div>
 
@@ -4974,8 +5047,8 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         <div className="panel-lite">
           <div className="pl-head">LIVE PROJECT SUMMARY</div>
           <div className="summary-row"><span>Original contract</span><strong>{originalContract != null ? formatMoneyGBP(num(originalContract)) : '—'}</strong></div>
-          <div className="summary-row"><span>Variations total</span><strong>{formatSignedMoneyGBP(variationTotal)}</strong></div>
-          <div className="summary-row"><span>Revised contract value</span><strong>{revisedContract != null ? formatMoneyGBP(revisedContract) : '—'}</strong></div>
+          <div className="summary-row"><span>Variations total</span><strong>{overviewVariationsLoading ? '…' : formatSignedMoneyGBP(overviewApprovedVariationsSum ?? 0)}</strong></div>
+          <div className="summary-row"><span>Revised contract value</span><strong>{overviewVariationsLoading ? '…' : overviewRevisedContract != null ? formatMoneyGBP(overviewRevisedContract) : '—'}</strong></div>
           <div className="summary-row no-b"><span>Total delays</span><strong>{`${totalDelayDays} day${totalDelayDays === 1 ? '' : 's'}`}</strong></div>
         </div>
       </div>
