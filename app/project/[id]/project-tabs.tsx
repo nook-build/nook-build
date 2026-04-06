@@ -16,6 +16,11 @@ import {
 import { supabase } from '@/lib/supabase'
 
 const accent = '#F4A623'
+const success = '#00E676'
+const infoBlue = '#3B8BFF'
+const cyan = '#00BCD4'
+const danger = '#FF3D57'
+const progressPurple = '#9C27B0'
 const border = '#1E2535'
 const surface = '#0F1219'
 
@@ -1299,18 +1304,9 @@ function weeksUntilHandover(handoverIso: string | null): {
   return { weeks: w, overdue: false }
 }
 
-function extractUkPostcode(text: string | null | undefined): string | null {
-  if (!text?.trim()) return null
-  const re = /([A-Z]{1,2}\d[A-Z\d]?\s*\d[A-Z]{2})/i
-  const m = text.match(re)
-  return m ? m[1].replace(/\s+/g, ' ').trim().toUpperCase() : null
-}
-
-function weatherSearchQuery(project: ProjectDetail): string | null {
-  const p = project.postcode?.trim()
-  if (p) return p
-  return extractUkPostcode(project.address)
-}
+const SW14_7DF_LAT = 51.4669
+const SW14_7DF_LON = -0.2739
+const SW14_7DF_LABEL = 'SW14 7DF'
 
 function wmoWeatherLabel(code: number): string {
   if (code === 0) return 'Clear sky'
@@ -1335,12 +1331,12 @@ function CommandCentreStatCard({
   label,
   value,
   hint,
-  highlight,
+  valueColor,
 }: {
   label: string
   value: string
   hint?: string
-  highlight?: boolean
+  valueColor: string
 }) {
   return (
     <div
@@ -1353,7 +1349,7 @@ function CommandCentreStatCard({
       <div
         className="absolute left-0 top-0 h-full w-1 rounded-r-full opacity-95"
         style={{
-          background: highlight ? accent : border,
+          background: valueColor,
         }}
         aria-hidden
       />
@@ -1361,8 +1357,8 @@ function CommandCentreStatCard({
         {label}
       </p>
       <p
-        className={`mt-2 pl-2 font-semibold tabular-nums tracking-tight ${highlight ? 'text-2xl sm:text-[1.65rem]' : 'text-xl sm:text-2xl'}`}
-        style={highlight ? { color: accent } : { color: '#F8FAFC' }}
+        className="mt-2 pl-2 text-3xl font-bold tabular-nums tracking-tight"
+        style={{ color: valueColor }}
       >
         {value}
       </p>
@@ -1377,10 +1373,12 @@ function CommandCentreProgressRow({
   label,
   percent,
   sublabel,
+  barColor,
 }: {
   label: string
   percent: number | null
   sublabel?: string
+  barColor: string
 }) {
   const pct =
     percent == null ? null : Math.min(100, Math.max(0, percent))
@@ -1403,8 +1401,8 @@ function CommandCentreProgressRow({
           className="h-2.5 rounded-full transition-[width] duration-500"
           style={{
             width: pct != null ? `${pct}%` : '0%',
-            backgroundColor: accent,
-            boxShadow: pct != null && pct > 0 ? '0 0 12px rgba(244,166,35,0.35)' : undefined,
+            backgroundColor: barColor,
+            boxShadow: pct != null && pct > 0 ? `0 0 12px ${barColor}59` : undefined,
           }}
         />
       </div>
@@ -1461,40 +1459,13 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   }, [project.id])
 
   useEffect(() => {
-    const q = weatherSearchQuery(project)
-    if (!q) {
-      setWeather((w) => ({
-        ...w,
-        loading: false,
-        error: '',
-        label: '',
-        temp: null,
-        code: null,
-        wind: null,
-        humidity: null,
-      }))
-      return
-    }
-
-    const searchQuery = q
     const ac = new AbortController()
     setWeather((w) => ({ ...w, loading: true, error: '' }))
 
     async function run() {
       try {
-        const geoRes = await fetch(
-          `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(searchQuery)}&count=1&language=en&format=json`,
-          { signal: ac.signal },
-        )
-        if (!geoRes.ok) throw new Error('Geocoding request failed')
-        const geo = (await geoRes.json()) as {
-          results?: { latitude: number; longitude: number; name: string }[]
-        }
-        const hit = geo.results?.[0]
-        if (!hit) throw new Error('Could not resolve location')
-
         const wxRes = await fetch(
-          `https://api.open-meteo.com/v1/forecast?latitude=${hit.latitude}&longitude=${hit.longitude}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&timezone=Europe%2FLondon&forecast_days=1`,
+          `https://api.open-meteo.com/v1/forecast?latitude=${SW14_7DF_LAT}&longitude=${SW14_7DF_LON}&current=temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m&timezone=Europe%2FLondon&forecast_days=1`,
           { signal: ac.signal },
         )
         if (!wxRes.ok) throw new Error('Weather request failed')
@@ -1512,7 +1483,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         setWeather({
           loading: false,
           error: '',
-          label: hit.name,
+          label: SW14_7DF_LABEL,
           temp:
             typeof cur.temperature_2m === 'number'
               ? cur.temperature_2m
@@ -1544,7 +1515,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
 
     void run()
     return () => ac.abort()
-  }, [project.postcode, project.address])
+  }, [])
 
   const weekOpts = useMemo(() => weekOptionsFromRows(rows), [rows])
   const latestPeriod = weekOpts[0] ?? null
@@ -1663,12 +1634,13 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
                 : '—'
           }
           hint="Original / baseline sum"
-          highlight
+          valueColor={accent}
         />
         <CommandCentreStatCard
           label="Total drawn"
           value={loading ? '…' : formatMoneyGBP(totalDrawn)}
           hint="Paid valuation lines (all periods)"
+          valueColor={success}
         />
         <CommandCentreStatCard
           label="Remaining"
@@ -1680,6 +1652,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
                 : '—'
           }
           hint="Revised contract less drawn"
+          valueColor={infoBlue}
         />
         <CommandCentreStatCard
           label="Current week"
@@ -1687,6 +1660,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           hint={
             latestPeriod ? 'Latest valuation period' : 'No valuation periods yet'
           }
+          valueColor={accent}
         />
         <CommandCentreStatCard
           label="Weeks to handover"
@@ -1696,11 +1670,13 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
               ? 'Past planned handover date'
               : 'From today to handover (calendar weeks)'
           }
+          valueColor={danger}
         />
         <CommandCentreStatCard
           label="Items locked"
           value={loading ? '…' : String(lockedItems)}
           hint="Locked / frozen items on record"
+          valueColor={cyan}
         />
       </div>
 
@@ -1729,16 +1705,19 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
             label="Timeline"
             percent={timelinePct}
             sublabel="Elapsed programme vs start → handover"
+            barColor={accent}
           />
           <CommandCentreProgressRow
             label="Payments (drawn to date)"
             percent={paymentsPct}
             sublabel="Paid certificates vs revised contract value"
+            barColor={success}
           />
           <CommandCentreProgressRow
             label="Completion (build progress)"
             percent={completionPct}
             sublabel="Weighted cumulative % (latest period lines)"
+            barColor={progressPurple}
           />
         </div>
       </div>
@@ -1814,7 +1793,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
             <p className="mt-1 text-sm text-[#64748B]">
               Open-Meteo forecast for{' '}
               <span style={{ color: accent }} className="font-medium">
-                {weatherSearchQuery(project) ?? 'add a UK postcode'}
+                {SW14_7DF_LABEL}
               </span>
             </p>
 
@@ -1866,8 +1845,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
               </div>
             ) : (
               <p className="mt-6 text-sm text-[#64748B]">
-                Add a postcode on the project (or include one in the site address)
-                to load live weather.
+                Live weather is temporarily fixed to SW14 7DF coordinates.
               </p>
             )}
           </div>
