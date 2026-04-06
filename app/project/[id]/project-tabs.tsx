@@ -1456,69 +1456,97 @@ type ProgrammeBarTone = {
 
 function programmeBarTone(color: string): ProgrammeBarTone {
   const c = color.toUpperCase()
-  if (c === '#F4A623')
+  const m = /^#?([0-9A-F]{2})([0-9A-F]{2})([0-9A-F]{2})$/.exec(c)
+  if (!m) {
     return {
-      bg: 'rgba(244,166,35,.18)',
-      border: 'rgba(244,166,35,.4)',
-      prog: '#F4A623',
-      text: '#F4A623',
+      bg: 'rgba(100,110,130,.35)',
+      border: 'rgba(100,110,130,.55)',
+      prog: '#8899AA',
+      text: '#8899AA',
     }
-  if (c === '#00E676')
-    return {
-      bg: 'rgba(0,230,118,.18)',
-      border: 'rgba(0,230,118,.4)',
-      prog: '#00E676',
-      text: '#00E676',
-    }
-  if (c === '#3B8BFF')
-    return {
-      bg: 'rgba(59,139,255,.22)',
-      border: 'rgba(59,139,255,.5)',
-      prog: '#3B8BFF',
-      text: '#3B8BFF',
-    }
-  if (c === '#FF3D57')
-    return {
-      bg: 'rgba(255,61,87,.18)',
-      border: 'rgba(255,61,87,.4)',
-      prog: '#FF3D57',
-      text: '#FF3D57',
-    }
-  if (c === '#9C27B0')
-    return {
-      bg: 'rgba(139,92,246,.18)',
-      border: 'rgba(139,92,246,.4)',
-      prog: '#8B5CF6',
-      text: '#8B5CF6',
-    }
-  if (c === '#00BFA5')
-    return {
-      bg: 'rgba(0,191,165,.2)',
-      border: 'rgba(0,191,165,.45)',
-      prog: '#00BFA5',
-      text: '#00BFA5',
-    }
-  if (c === '#00BCD4')
-    return {
-      bg: 'rgba(0,191,165,.18)',
-      border: 'rgba(0,191,165,.4)',
-      prog: '#00BFA5',
-      text: '#00BFA5',
-    }
+  }
+  const r = parseInt(m[1], 16)
+  const g = parseInt(m[2], 16)
+  const b = parseInt(m[3], 16)
   return {
-    bg: 'rgba(100,110,130,.35)',
-    border: 'rgba(100,110,130,.55)',
-    prog: '#8899AA',
-    text: '#8899AA',
+    bg: `rgba(${r},${g},${b},.22)`,
+    border: `rgba(${r},${g},${b},.45)`,
+    prog: `#${m[1]}${m[2]}${m[3]}`,
+    text: `#${m[1]}${m[2]}${m[3]}`,
   }
 }
 
-/** Gantt bar colours by phase name (Phase 1 Groundworks / Internal Works / Finishes). */
-function programmePhaseTone(phase: string): ProgrammeBarTone {
-  const p = phase.trim()
-  if (/phase\s*1|groundworks/i.test(p)) return programmeBarTone('#F4A623')
-  if (/phase\s*2|internal works/i.test(p)) return programmeBarTone('#3B8BFF')
-  if (/phase\s*3|finishes|fit out/i.test(p)) return programmeBarTone('#00BFA5')
+/** Trade-level Gantt colours matching the HTML portal categories. */
+function programmeTradeTone(tradeName: string): ProgrammeBarTone {
+  const t = tradeName.trim().toLowerCase()
+  if (
+    t.includes('drainage') ||
+    t.includes('soakaway')
+  ) return programmeBarTone('#92400E')
+  if (
+    t.includes('groundwork') ||
+    t.includes('excavation') ||
+    t.includes('foundation') ||
+    t.includes('demolition') ||
+    t.includes('lift hire') ||
+    t.includes('site wc') ||
+    t.includes('preparation')
+  ) return programmeBarTone('#F4A623')
+  if (
+    t.includes('wall') ||
+    t.includes('brick') ||
+    t.includes('block') ||
+    t.includes('cavity')
+  ) return programmeBarTone('#3B8BFF')
+  if (
+    t.includes('steel') ||
+    t.includes('beam') ||
+    t.includes('structure')
+  ) return programmeBarTone('#FF3D57')
+  if (
+    t.includes('roof') ||
+    t.includes('grp') ||
+    t.includes('insulation') ||
+    t.includes('gutter')
+  ) return programmeBarTone('#00E676')
+  if (
+    t.includes('glass') ||
+    t.includes('balustrade')
+  ) return programmeBarTone('#7DD3FC')
+  if (
+    t.includes('window') ||
+    t === 'windows and doors'
+  ) return programmeBarTone('#00BFA5')
+  if (
+    t.includes('electric') ||
+    t.includes('electrical')
+  ) return programmeBarTone('#FFD700')
+  if (
+    t.includes('plumb') ||
+    t.includes('cylinder') ||
+    t.includes('boiler')
+  ) return programmeBarTone('#00BCD4')
+  if (
+    t.includes('plaster') ||
+    t.includes('render')
+  ) return programmeBarTone('#8B5CF6')
+  if (
+    t.includes('floor') ||
+    t.includes('screed') ||
+    t.includes('tile')
+  ) return programmeBarTone('#FF6B9D')
+  if (
+    t.includes('skirting') ||
+    t.includes('architrave') ||
+    t.includes('carpentry') ||
+    t.includes('internal door') ||
+    t.includes('mdf')
+  ) return programmeBarTone('#D4830A')
+  if (
+    t.includes('paint') ||
+    t.includes('decorat')
+  ) return programmeBarTone('#A3E635')
+  if (t.includes('scaffold')) return programmeBarTone('#64748B')
   return programmeBarTone('#8899AA')
 }
 
@@ -1971,7 +1999,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
       const first = items[0]
       if (!first || seen.has(phase)) continue
       seen.add(phase)
-      const tone = programmePhaseTone(phase)
+      const tone = programmeTradeTone(first.trade_name)
       out.push({ label: phase, bg: tone.bg, border: tone.border })
     }
     return out
@@ -2042,7 +2070,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                   <span className="phase-text">{phase}</span>
                 </div>
                 {items.map((item) => {
-                  const tone = programmePhaseTone(phase)
+                  const tone = programmeTradeTone(item.trade_name)
                   const letter = item.trade_name.slice(0, 1).toUpperCase()
                   const locked = item.percent_complete >= 100
                   return (
@@ -2126,7 +2154,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                 <div key={`rows-${phase}`}>
                   <div className="chart-row phase-row" />
                   {items.map((item) => {
-                    const tone = programmePhaseTone(phase)
+                    const tone = programmeTradeTone(item.trade_name)
                     const left = ((item.start_week - minWeek) / weekMeta.length) * 100
                     const width =
                       ((item.end_week - item.start_week + 1) / weekMeta.length) * 100
@@ -2435,8 +2463,11 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
           top: 10px;
           border-radius: 4px;
         }
+        .gbar {
+          opacity: 0.85;
+        }
         .gbar-prog {
-          opacity: 0.55;
+          opacity: 1;
         }
         .gbar-text {
           position: absolute;
