@@ -1,6 +1,7 @@
 'use client'
 
 import {
+  Fragment,
   useCallback,
   useEffect,
   useMemo,
@@ -304,6 +305,77 @@ function valuationPeriodsSorted(rows: ValuationRecord[]) {
     })
 }
 
+/** Oldest → newest week labels for valuation navigation. */
+function valuationChronologicalWeekLabels(rows: ValuationRecord[]): string[] {
+  const byLabel = new Map<string, number>()
+  for (const r of rows) {
+    const t = r.created_at ? Date.parse(r.created_at) : 0
+    const prev = byLabel.get(r.week_label)
+    if (prev === undefined || t < prev) byLabel.set(r.week_label, t)
+  }
+  return [...byLabel.entries()]
+    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
+    .map(([w]) => w)
+}
+
+function formatPortalWeekRangeFromStart(
+  projectStartIso: string | null,
+  weekOrdinal1Based: number,
+): string {
+  if (!projectStartIso) return '—'
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(projectStartIso.trim())
+  if (!m) return '—'
+  const base = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  const start = base + (weekOrdinal1Based - 1) * 7 * 86400000
+  const end = start + 6 * 86400000
+  const fmt = (ms: number) =>
+    new Date(ms).toLocaleDateString('en-GB', {
+      day: 'numeric',
+      month: 'short',
+      year: '2-digit',
+      timeZone: 'UTC',
+    })
+  return `${fmt(start)} – ${fmt(end)}`
+}
+
+function prevDrawnForTrade(
+  rows: ValuationRecord[],
+  tradeDesc: string,
+  activeWeekLabel: string,
+  chronWeeks: string[],
+): number {
+  const idx = chronWeeks.indexOf(activeWeekLabel)
+  if (idx <= 0) return 0
+  const d = tradeDesc.trim()
+  let sum = 0
+  for (let i = 0; i < idx; i++) {
+    const wl = chronWeeks[i]
+    for (const r of rows) {
+      if (r.week_label !== wl) continue
+      if ((r.description?.trim() ?? '') !== d) continue
+      sum += num(r.amount_due)
+    }
+  }
+  return sum
+}
+
+function cumulativeCertThroughWeek(
+  rows: ValuationRecord[],
+  activeWeekLabel: string,
+  chronWeeks: string[],
+): number {
+  const idx = chronWeeks.indexOf(activeWeekLabel)
+  if (idx < 0) return 0
+  let sum = 0
+  for (let i = 0; i <= idx; i++) {
+    const wl = chronWeeks[i]
+    for (const r of rows) {
+      if (r.week_label === wl) sum += num(r.amount_due)
+    }
+  }
+  return sum
+}
+
 function weightedValuePercent(
   list: ValuationRecord[],
   getPct: (r: ValuationRecord) => number | null,
@@ -322,26 +394,6 @@ function weightedValuePercent(
   return numerator / denominator
 }
 
-function formatPercent(v: number | string | null | undefined) {
-  if (v == null) return '—'
-  return formatPercentDisplay(num(v))
-}
-
-function ValuationStatusPill({ status }: { status: string }) {
-  const paid = status.toLowerCase() === 'paid'
-  return (
-    <span
-      className={`inline-flex rounded-md border px-2.5 py-1 text-xs font-medium uppercase tracking-wide ${
-        paid
-          ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-400'
-          : 'border-amber-500/25 bg-amber-500/10 text-amber-400'
-      }`}
-    >
-      {paid ? 'Paid' : 'Unpaid'}
-    </span>
-  )
-}
-
 function pctThisWeek(r: ValuationRecord) {
   const p = r.percent_complete
   return p == null ? null : num(p)
@@ -354,12 +406,16 @@ function pctCumulative(r: ValuationRecord) {
 
 function ValuationTab({ project }: { project: ProjectDetail }) {
   const [rows, setRows] = useState<ValuationRecord[]>([])
+  const [programmeItems, setProgrammeItems] = useState<
+    { trade_name: string; phase: string }[]
+  >([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState('')
   const [formError, setFormError] = useState('')
   const [saving, setSaving] = useState(false)
-  /** User-chosen certificate period; falls back to latest when null or stale. */
   const [periodOverride, setPeriodOverride] = useState<string | null>(null)
+  const [lockedIds, setLockedIds] = useState<Set<string>>(() => new Set())
+  const lockStorageKey = `nook-valuation-locks:${project.id}`
 
   const [weekLabel, setWeekLabel] = useState('')
   const [description, setDescription] = useState('')
@@ -370,6 +426,21 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   const [amountThisWeek, setAmountThisWeek] = useState('')
   const [cumulativePercentInput, setCumulativePercentInput] = useState('')
   const [lineStatus, setLineStatus] = useState<'paid' | 'unpaid'>('unpaid')
+
+  useEffect(() => {
+    try {
+      const raw =
+        typeof window !== 'undefined'
+          ? localStorage.getItem(lockStorageKey)
+          : null
+      if (raw) {
+        const arr = JSON.parse(raw) as string[]
+        setLockedIds(new Set(arr))
+      }
+    } catch {
+      /* ignore */
+    }
+  }, [lockStorageKey])
 
   useEffect(() => {
     let cancelled = false
@@ -389,23 +460,44 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       } else {
         setRows((data ?? []) as ValuationRecord[])
       }
+
+      const { data: pData } = await supabase
+        .from('programme_items')
+        .select('trade_name, phase')
+        .eq('project_id', project.id)
+        .order('start_week', { ascending: true })
+      if (!cancelled && pData) {
+        setProgrammeItems(pData as { trade_name: string; phase: string }[])
+      }
+
       setLoading(false)
     }
-    load()
+    void load()
     return () => {
       cancelled = true
     }
   }, [project.id])
 
-  const weekOpts = useMemo(() => weekOptionsFromRows(rows), [rows])
+  const chronWeeks = useMemo(
+    () => valuationChronologicalWeekLabels(rows),
+    [rows],
+  )
 
   const activePeriod = useMemo(() => {
-    if (weekOpts.length === 0) return null
-    if (periodOverride && weekOpts.includes(periodOverride)) {
+    if (chronWeeks.length === 0) return null
+    if (periodOverride && chronWeeks.includes(periodOverride)) {
       return periodOverride
     }
-    return weekOpts[0] ?? null
-  }, [weekOpts, periodOverride])
+    return chronWeeks[chronWeeks.length - 1] ?? null
+  }, [chronWeeks, periodOverride])
+
+  const weekIdx = activePeriod ? chronWeeks.indexOf(activePeriod) : -1
+  const weekOrdinal = weekIdx >= 0 ? weekIdx + 1 : 1
+  const weekRangeStr = formatPortalWeekRangeFromStart(
+    project.start_date,
+    weekOrdinal,
+  )
+  const weekDisplayLine = `WEEK ${weekOrdinal} · ${weekRangeStr}`
 
   const filteredRows = useMemo(() => {
     if (!activePeriod) return []
@@ -414,7 +506,49 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       .sort((a, b) => a.line_order - b.line_order)
   }, [rows, activePeriod])
 
-  const { contractSum, lineValueSum, paidToDate, thisWeekCertificate, outstanding } =
+  const tradeToPhase = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const p of programmeItems) {
+      m.set(p.trade_name.trim().toLowerCase(), p.phase)
+    }
+    return m
+  }, [programmeItems])
+
+  const phaseOrder = useMemo(() => {
+    const seen = new Set<string>()
+    const out: string[] = []
+    for (const p of programmeItems) {
+      if (!seen.has(p.phase)) {
+        seen.add(p.phase)
+        out.push(p.phase)
+      }
+    }
+    return out
+  }, [programmeItems])
+
+  const phaseForDescription = useCallback(
+    (desc: string | null): string => {
+      const key = (desc ?? '').trim().toLowerCase()
+      if (!key) return 'Other'
+      return tradeToPhase.get(key) ?? 'Other'
+    },
+    [tradeToPhase],
+  )
+
+  const tableGroups = useMemo(() => {
+    const groups: { phase: string; rows: ValuationRecord[] }[] = []
+    for (const ph of phaseOrder) {
+      const rs = filteredRows.filter((r) => phaseForDescription(r.description) === ph)
+      if (rs.length > 0) groups.push({ phase: ph, rows: rs })
+    }
+    const other = filteredRows.filter(
+      (r) => phaseForDescription(r.description) === 'Other',
+    )
+    if (other.length > 0) groups.push({ phase: 'Other', rows: other })
+    return groups
+  }, [filteredRows, phaseOrder, phaseForDescription])
+
+  const { contractSum, paidToDate, thisWeekCertificate, outstanding } =
     useMemo(() => {
       const lineSum = filteredRows.reduce((s, r) => s + num(r.contract_value), 0)
       const projectCv =
@@ -437,12 +571,185 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
 
       return {
         contractSum,
-        lineValueSum: lineSum,
         paidToDate: paid,
         thisWeekCertificate,
         outstanding,
       }
     }, [filteredRows, rows, project.contract_value])
+
+  const variationsTotal = num(project.variations_total)
+  const revisedContract =
+    contractSum > 0 ? contractSum + variationsTotal : contractSum
+
+  const cumulativeDrawnThrough = useMemo(() => {
+    if (!activePeriod) return 0
+    return cumulativeCertThroughWeek(rows, activePeriod, chronWeeks)
+  }, [rows, activePeriod, chronWeeks])
+
+  const remainingVsCert = Math.max(0, revisedContract - cumulativeDrawnThrough)
+
+  const drawPctOfContract =
+    revisedContract > 0
+      ? (cumulativeDrawnThrough / revisedContract) * 100
+      : 0
+
+  const totalWeeksProg = useMemo(() => {
+    if (!project.start_date || !project.handover_date) {
+      return Math.max(chronWeeks.length, 1)
+    }
+    const m1 = /^(\d{4})-(\d{2})-(\d{2})/.exec(project.start_date.trim())
+    const m2 = /^(\d{4})-(\d{2})-(\d{2})/.exec(project.handover_date.trim())
+    if (!m1 || !m2) return Math.max(chronWeeks.length, 1)
+    const a = Date.UTC(Number(m1[1]), Number(m1[2]) - 1, Number(m1[3]))
+    const b = Date.UTC(Number(m2[1]), Number(m2[2]) - 1, Number(m2[3]))
+    const days = (b - a) / 86400000
+    if (days < 0) return Math.max(chronWeeks.length, 1)
+    return Math.max(1, Math.round(days / 7))
+  }, [project.start_date, project.handover_date, chronWeeks.length])
+
+  const progPct = Math.min(
+    100,
+    Math.round(((weekOrdinal || 1) / totalWeeksProg) * 1000) / 10,
+  )
+
+  const lockedCount = filteredRows.filter((r) => lockedIds.has(r.id)).length
+
+  const itemsClaimedThisWeek = filteredRows.filter(
+    (r) => num(r.amount_due) > 0,
+  ).length
+
+  const avgPctThisWeek = weightedValuePercent(filteredRows, pctThisWeek)
+
+  const certBarPct =
+    revisedContract > 0
+      ? Math.min(100, (cumulativeDrawnThrough / revisedContract) * 100)
+      : 0
+
+  async function refetchRows() {
+    const { data, error } = await supabase
+      .from('valuations')
+      .select('*')
+      .eq('project_id', project.id)
+      .order('line_order', { ascending: true })
+    if (!error && data) setRows(data as ValuationRecord[])
+  }
+
+  async function updateRowPct(r: ValuationRecord, pct: number) {
+    const cv = num(r.contract_value)
+    const amt = Math.round(((cv * pct) / 100) * 100) / 100
+    const { error } = await supabase
+      .from('valuations')
+      .update({ percent_complete: pct, amount_due: amt })
+      .eq('id', r.id)
+    if (error) void error
+    else void refetchRows()
+  }
+
+  function navigateWeek(delta: number) {
+    if (chronWeeks.length === 0) return
+    const idx = chronWeeks.indexOf(activePeriod ?? '')
+    const n = Math.max(0, Math.min(chronWeeks.length - 1, idx + delta))
+    setPeriodOverride(chronWeeks[n])
+  }
+
+  function persistLocks(next: Set<string>) {
+    try {
+      localStorage.setItem(lockStorageKey, JSON.stringify([...next]))
+    } catch {
+      /* ignore */
+    }
+  }
+
+  function toggleLock(id: string) {
+    setLockedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        if (!confirm('Unlock this line? This allows further claims.')) return prev
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      persistLocks(next)
+      return next
+    })
+  }
+
+  async function handleAutoSuggest() {
+    if (!activePeriod) return
+    for (const r of filteredRows) {
+      if (lockedIds.has(r.id)) continue
+      const cv = num(r.contract_value)
+      if (cv <= 0) continue
+      const prev = prevDrawnForTrade(
+        rows,
+        r.description ?? '',
+        activePeriod,
+        chronWeeks,
+      )
+      const pctRem = Math.max(0, ((cv - prev) / cv) * 100)
+      const sug = Math.min(25, Math.max(0, Math.round(pctRem * 0.2 * 10) / 10))
+      await updateRowPct(r, sug)
+    }
+  }
+
+  async function handleClearWeek() {
+    if (!activePeriod) return
+    if (typeof window !== 'undefined' && !confirm('Clear all entries for this week?')) return
+    for (const r of filteredRows) {
+      if (lockedIds.has(r.id)) continue
+      await supabase
+        .from('valuations')
+        .update({ percent_complete: 0, amount_due: 0 })
+        .eq('id', r.id)
+    }
+    void refetchRows()
+  }
+
+  function printCertificate() {
+    if (typeof window !== 'undefined') window.print()
+  }
+
+  const totalContractCol = filteredRows.reduce(
+    (s, r) => s + num(r.contract_value),
+    0,
+  )
+  const totalPrevDrawn = filteredRows.reduce(
+    (s, r) =>
+      s +
+      prevDrawnForTrade(
+        rows,
+        r.description ?? '',
+        activePeriod ?? '',
+        chronWeeks,
+      ),
+    0,
+  )
+  const totalRemaining = filteredRows.reduce((s, r) => {
+    const cv = num(r.contract_value)
+    const prev = prevDrawnForTrade(
+      rows,
+      r.description ?? '',
+      activePeriod ?? '',
+      chronWeeks,
+    )
+    return s + Math.max(0, cv - prev)
+  }, 0)
+
+  const totalBalanceLeft = filteredRows.reduce((s, r) => {
+    const cv = num(r.contract_value)
+    const cum = pctCumulative(r)
+    const claimed =
+      cum != null ? (cv * cum) / 100 : prevDrawnForTrade(
+          rows,
+          r.description ?? '',
+          activePeriod ?? '',
+          chronWeeks,
+        ) + num(r.amount_due)
+    return s + Math.max(0, cv - claimed)
+  }, 0)
+
+  const footerClaimedPct =
+    revisedContract > 0 ? (cumulativeDrawnThrough / revisedContract) * 100 : 0
 
   async function handleAdd(e: FormEvent) {
     e.preventDefault()
@@ -531,464 +838,1261 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     }
   }
 
-  const totalContractCol = filteredRows.reduce(
-    (s, r) => s + num(r.contract_value),
-    0,
-  )
-  const avgPctWeek = weightedValuePercent(filteredRows, pctThisWeek)
-  const avgPctCum = weightedValuePercent(filteredRows, pctCumulative)
-
-  const summaryTile = (
-    label: string,
-    value: string,
-    hint?: string,
-    highlight?: boolean,
-  ) => (
-    <div
-      className="relative overflow-hidden rounded-xl border px-5 py-5"
-      style={{
-        borderColor: border,
-        backgroundColor: '#080A0F',
-      }}
-    >
-      <div
-        className="absolute left-0 top-0 h-full w-1 rounded-r-full opacity-95"
-        style={{
-          background: highlight
-            ? accent
-            : border,
-        }}
-        aria-hidden
-      />
-      <p className="pl-2 text-[11px] font-semibold uppercase tracking-wider text-[#64748B]">
-        {label}
-      </p>
-      <p
-        className={`mt-2 pl-2 font-semibold tabular-nums tracking-tight ${highlight ? 'text-2xl sm:text-[1.65rem]' : 'text-xl sm:text-2xl'}`}
-        style={highlight ? { color: accent } : { color: '#F8FAFC' }}
-      >
-        {value}
-      </p>
-      {hint ? (
-        <p className="mt-2 pl-2 text-xs text-[#475569]">{hint}</p>
-      ) : null}
-    </div>
-  )
+  const activeCount = filteredRows.filter((r) => num(r.percent_complete) > 0)
+    .length
 
   return (
-    <div className="space-y-8">
-      <div
-        className="relative overflow-hidden rounded-xl border"
-        style={{ borderColor: border, backgroundColor: surface }}
-      >
-        <div
-          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
-          style={{
-            background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
-          }}
-          aria-hidden
-        />
-        <div className="p-5 sm:p-7">
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-            <div>
-              <p className="text-[10px] font-semibold tracking-[0.2em] text-[#64748B]">
-                INTERIM VALUATION
-              </p>
-              <h2 className="mt-1 text-lg font-semibold tracking-tight text-[#F8FAFC] sm:text-xl">
-                Summary
-              </h2>
-              <p className="mt-1 max-w-xl text-sm text-[#64748B]">
-                Contract position, this period’s certificate, paid-to-date, and
-                balance outstanding across all valuation periods.
-              </p>
-            </div>
-            {projectCvHint(project, lineValueSum)}
+    <div className="val-portal-root" id="pg-valuation">
+      <div className="stats">
+        <div className="sc a">
+          <div className="sl">Contract</div>
+          <div className="sv" style={{ color: 'var(--ac)' }}>
+            {contractSum > 0 ? formatMoneyGBP(contractSum) : '—'}
           </div>
-
-          <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-            {summaryTile(
-              'Contract sum',
-              contractSum > 0 ? formatMoneyGBP(contractSum) : '—',
-              project.contract_value != null
-                ? 'From project record'
-                : lineValueSum > 0
-                  ? 'Sum of BOQ lines (this period)'
-                  : 'Set project contract value or add lines',
-              true,
-            )}
-            {summaryTile(
-              'Paid to date',
-              formatMoneyGBP(paidToDate),
-              'Sum of lines marked paid (all periods)',
-            )}
-            {summaryTile(
-              'This week certificate',
-              formatMoneyGBP(thisWeekCertificate),
-              activePeriod
-                ? `Sum of amount due · ${activePeriod}`
-                : 'Select a period below',
-            )}
-            {summaryTile(
-              'Outstanding',
-              contractSum > 0 ? formatMoneyGBP(outstanding) : '—',
-              'Contract sum less paid to date',
-            )}
+          <div className="ss">Original</div>
+        </div>
+        <div className="sc g">
+          <div className="sl">Total Drawn</div>
+          <div className="sv" style={{ color: 'var(--gr)' }}>
+            {formatMoneyGBP(cumulativeDrawnThrough)}
+          </div>
+          <div className="ss">{drawPctOfContract.toFixed(1)}%</div>
+        </div>
+        <div className="sc b">
+          <div className="sl">This Week Cert</div>
+          <div className="sv" style={{ color: 'var(--bl)' }}>
+            {formatMoneyGBP(thisWeekCertificate)}
+          </div>
+        </div>
+        <div className="sc p">
+          <div className="sl">Remaining</div>
+          <div className="sv" style={{ color: 'var(--pu)' }}>
+            {revisedContract > 0 ? formatMoneyGBP(remainingVsCert) : '—'}
+          </div>
+        </div>
+        <div className="sc t">
+          <div className="sl">Locked Items</div>
+          <div className="sv" style={{ color: 'var(--tl)' }}>
+            {lockedCount}/{filteredRows.length || 0}
           </div>
         </div>
       </div>
 
-      <div
-        className="relative overflow-hidden rounded-xl border"
-        style={{ borderColor: border, backgroundColor: surface }}
-      >
-        <div
-          className="absolute left-0 top-0 h-0.5 w-full opacity-90"
-          style={{
-            background: `linear-gradient(90deg, ${accent}, transparent 70%)`,
-          }}
-          aria-hidden
-        />
-        <div className="p-5 sm:p-7">
-          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="text-sm font-semibold uppercase tracking-wider text-[#64748B]">
-                Weekly valuation — trades / BOQ
-              </h2>
-              <p className="mt-1 text-sm text-[#64748B]">
-                One row per trade or item for the selected certificate period.
-              </p>
+      <div className="portal-live-panel" style={{ marginTop: 14 }}>
+        <div className="plp-title">Contract Value Breakdown</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
+          <div className="plp-card">
+            <div className="plp-label">Original Contract</div>
+            <div className="plp-value" style={{ color: 'var(--ac)' }}>
+              {contractSum > 0 ? formatMoneyGBP(contractSum) : '—'}
             </div>
-            {weekOpts.length > 0 ? (
-              <div className="flex flex-col gap-1.5 sm:items-end">
-                <label
-                  htmlFor="val-week-filter"
-                  className="text-[11px] font-semibold tracking-wider text-[#64748B]"
-                >
-                  PERIOD
-                </label>
-                <select
-                  id="val-week-filter"
-                  value={activePeriod ?? ''}
-                  onChange={(e) =>
-                    setPeriodOverride(e.target.value || null)
-                  }
-                  className={`${inputClass} min-w-[220px]`}
-                >
-                  {weekOpts.map((w) => (
-                    <option key={w} value={w}>
-                      {w}
-                    </option>
-                  ))}
-                </select>
+            <div className="plp-sub">Signed contract value</div>
+          </div>
+          <div className="plp-card accent">
+            <div className="plp-label">Variations Approved</div>
+            <div className="plp-value" style={{ color: 'var(--ac)' }}>
+              {variationsTotal > 0 ? formatMoneyGBP(variationsTotal) : '£0'}
+            </div>
+            <div className="plp-sub">Net approved variations</div>
+          </div>
+          <div className="plp-card accent">
+            <div className="plp-label">Variations Pending</div>
+            <div className="plp-value" style={{ color: 'var(--ac)' }}>£0</div>
+            <div className="plp-sub">0 pending</div>
+          </div>
+          <div className="plp-card success">
+            <div className="plp-label">Revised Contract</div>
+            <div className="plp-value" style={{ color: 'var(--gr)' }}>
+              {revisedContract > 0 ? formatMoneyGBP(revisedContract) : '—'}
+            </div>
+            <div className="plp-sub">Inc. approved vars</div>
+          </div>
+          <div className="plp-card warn">
+            <div className="plp-label">Max Exposure</div>
+            <div className="plp-value" style={{ color: 'var(--rd)' }}>
+              {revisedContract > 0 ? formatMoneyGBP(revisedContract) : '—'}
+            </div>
+            <div className="plp-sub">Inc. all pending vars</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="wk-bar">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+          <div className="wk-bar-lbl">Valuation Week</div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <button
+              type="button"
+              className="wk-nav-btn"
+              disabled={weekIdx <= 0}
+              onClick={() => navigateWeek(-1)}
+            >
+              ◀
+            </button>
+            <div style={{ textAlign: 'center' }}>
+              <div className="wk-disp">{weekDisplayLine}</div>
+              <div className="wk-dates-lbl">{weekRangeStr}</div>
+            </div>
+            <button
+              type="button"
+              className="wk-nav-btn"
+              disabled={weekIdx < 0 || weekIdx >= chronWeeks.length - 1}
+              onClick={() => navigateWeek(1)}
+            >
+              ▶
+            </button>
+          </div>
+        </div>
+        <div style={{ flex: 1, minWidth: 150 }}>
+          <div className="wk-bar-lbl">Programme</div>
+          <div className="wk-prog-track">
+            <div
+              className="wk-prog-fill"
+              style={{ width: `${progPct}%` }}
+            />
+          </div>
+          <div className="wk-prog-meta">
+            <span>
+              Wk {weekOrdinal} of {totalWeeksProg}
+            </span>
+            <span>{progPct}%</span>
+          </div>
+        </div>
+        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
+          <button type="button" className="btn btn-tl" onClick={handleAutoSuggest}>
+            ⚡ Auto-suggest
+          </button>
+          <button type="button" className="btn btn-ghost" onClick={handleClearWeek}>
+            ✕ Clear week
+          </button>
+        </div>
+        <div>
+          <div className="wk-bar-lbl">Week cert</div>
+          <div className="wk-cert-live">{formatMoneyGBP(thisWeekCertificate)}</div>
+        </div>
+      </div>
+
+      <div className="alert al-i">
+        <span>💡</span>
+        <span>
+          <strong>{weekDisplayLine}</strong> ({weekRangeStr}): {activeCount} items
+          active. Enter % per item based on actual work done. 🔒 Lock only when
+          100% complete on site.
+        </span>
+      </div>
+
+      {loadError ? (
+        <div className="val-portal-error" role="alert">
+          Could not load valuations: {loadError}
+        </div>
+      ) : null}
+
+      {loading ? (
+        <p className="val-loading">Loading…</p>
+      ) : (
+        <div className="two-col">
+          <div>
+            <div className="panel">
+              <div className="ph">
+                <div>
+                  <div className="pt">VALUATION SCHEDULE</div>
+                  <div className="ps">
+                    Week {weekOrdinal} — {weekRangeStr.replace('–', 'to')}
+                  </div>
+                </div>
+                <div className="ph-hint">
+                  🔒 Lock item only when 100% complete on site
+                </div>
               </div>
-            ) : null}
+              <div className="vtbl-wrap">
+                <table className="vtbl">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '16%', minWidth: 130 }}>Item</th>
+                      <th>Contract £</th>
+                      <th>Prev Drawn £</th>
+                      <th>Remaining £</th>
+                      <th>Site Status</th>
+                      <th>This Wk %</th>
+                      <th>This Wk £</th>
+                      <th className="th-claimed">Claimed to Date £</th>
+                      <th>Balance Left £</th>
+                      <th className="th-pctsplit">% Claimed / % Left</th>
+                      <th>Lock</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {tableGroups.length === 0 ? (
+                      <tr>
+                        <td colSpan={11} className="val-empty-cell">
+                          No valuation lines for this period.
+                        </td>
+                      </tr>
+                    ) : (
+                      tableGroups.map((g) => (
+                        <Fragment key={`ph-${g.phase}`}>
+                          <tr>
+                            <td colSpan={11} className="ph-cell">
+                              {g.phase}
+                            </td>
+                          </tr>
+                          {g.rows.map((r) => {
+                            const cv = num(r.contract_value)
+                            const prev = activePeriod
+                              ? prevDrawnForTrade(
+                                  rows,
+                                  r.description ?? '',
+                                  activePeriod,
+                                  chronWeeks,
+                                )
+                              : 0
+                            const rem = Math.max(0, cv - prev)
+                            const pctW = pctThisWeek(r)
+                            const amt = num(r.amount_due)
+                            const cum = pctCumulative(r)
+                            const claimed =
+                              cum != null
+                                ? (cv * cum) / 100
+                                : prev + amt
+                            const bal = Math.max(0, cv - claimed)
+                            const claimedPct = cv > 0 ? (claimed / cv) * 100 : 0
+                            const leftPct = 100 - claimedPct
+                            const locked = lockedIds.has(r.id)
+                            const isDim =
+                              pctW === 0 || pctW == null
+                                ? !locked
+                                : false
+                            const active =
+                              (pctW ?? 0) > 0 || (cum ?? 0) > 0
+                            return (
+                              <tr
+                                key={r.id}
+                                className={`${locked ? 'locked-row-bg' : ''} ${isDim ? 'dimmed' : ''}`}
+                              >
+                                <td className="td-item">
+                                  {active ? (
+                                    <span className="dot-active" />
+                                  ) : null}
+                                  <span>{r.description?.trim() || '—'}</span>
+                                </td>
+                                <td className="td-mono">{formatMoneyGBP(cv)}</td>
+                                <td className="td-mono td-mu">{formatMoneyGBP(prev)}</td>
+                                <td className="td-mono">
+                                  {rem <= 0 ? '✓ Full' : formatMoneyGBP(rem)}
+                                </td>
+                                <td>
+                                  <span
+                                    className={`badge ${active ? 'b-ac' : 'b-mu'}`}
+                                  >
+                                    {active ? 'Active' : 'Pending'}
+                                  </span>
+                                </td>
+                                <td>
+                                  <input
+                                    className={`pi ${(pctW ?? 0) > 0 ? 'hv' : ''}`}
+                                    type="number"
+                                    min={0}
+                                    max={100}
+                                    step={0.5}
+                                    disabled={locked}
+                                    value={pctW ?? ''}
+                                    placeholder="0%"
+                                    onChange={(e) => {
+                                      const v = parseFloat(e.target.value)
+                                      if (Number.isNaN(v)) return
+                                      void updateRowPct(r, v)
+                                    }}
+                                  />
+                                </td>
+                                <td className="td-mono td-mu">
+                                  {amt > 0 ? formatMoneyGBP(amt) : '—'}
+                                </td>
+                                <td className="td-claimed">
+                                  <span className="td-claimed-inner">
+                                    {formatMoneyGBP(claimed)}
+                                  </span>
+                                </td>
+                                <td className="td-mono">
+                                  {bal <= 0
+                                    ? '✓ Nil'
+                                    : formatMoneyGBP(bal)}
+                                </td>
+                                <td className="td-split">
+                                  <div className="split-bar-wrap">
+                                    <div
+                                      className="split-bar-fill"
+                                      style={{
+                                        width: `${Math.min(100, claimedPct)}%`,
+                                        background:
+                                          claimedPct >= 100
+                                            ? 'var(--gr)'
+                                            : claimedPct > 50
+                                              ? 'var(--tl)'
+                                              : 'var(--ac)',
+                                      }}
+                                    />
+                                  </div>
+                                  <div className="split-meta">
+                                    <span className="c-tl">
+                                      ✓ {claimedPct.toFixed(1)}%
+                                    </span>
+                                    <span className="c-rd">
+                                      ⬜ {leftPct.toFixed(1)}%
+                                    </span>
+                                  </div>
+                                </td>
+                                <td>
+                                  <button
+                                    type="button"
+                                    className={`lock-btn ${locked ? 'lkd' : ''}`}
+                                    title="Lock only when 100% complete"
+                                    onClick={() => toggleLock(r.id)}
+                                  >
+                                    {locked ? '🔒 Locked' : 'Lock ✓'}
+                                  </button>
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </Fragment>
+                      ))
+                    )}
+                  </tbody>
+                  <tfoot>
+                    <tr className="foot-totals">
+                      <td>TOTALS</td>
+                      <td className="foot-ac">{formatMoneyGBP(totalContractCol)}</td>
+                      <td className="foot-mu">{formatMoneyGBP(totalPrevDrawn)}</td>
+                      <td className="foot-mu">{formatMoneyGBP(totalRemaining)}</td>
+                      <td />
+                      <td />
+                      <td className="foot-gr">{formatMoneyGBP(thisWeekCertificate)}</td>
+                      <td className="foot-claimed">{formatMoneyGBP(cumulativeDrawnThrough)}</td>
+                      <td className="foot-rd">{formatMoneyGBP(totalBalanceLeft)}</td>
+                      <td className="foot-split">
+                        <div className="split-bar-wrap foot-total-bar">
+                          <div
+                            style={{
+                              width: `${Math.min(100, footerClaimedPct)}%`,
+                              height: '100%',
+                              background: 'var(--tl)',
+                              borderRadius: 3,
+                            }}
+                          />
+                        </div>
+                        <div className="split-meta">
+                          <span className="c-tl">
+                            ✓ {footerClaimedPct.toFixed(1)}%
+                          </span>
+                          <span className="c-rd">
+                            ⬜ {(100 - footerClaimedPct).toFixed(1)}%
+                          </span>
+                        </div>
+                      </td>
+                      <td />
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+              <div className="vtbl-footnote">
+                Weeks 1 &amp; 2 loaded from your valuation file. Adjust any figures — nothing is locked until you lock it manually.
+              </div>
+            </div>
           </div>
 
-          {loadError ? (
-            <div
-              className="mt-4 rounded-lg border border-red-900/40 bg-red-950/25 px-4 py-3 text-sm text-red-200"
-              role="alert"
-            >
-              Could not load valuations: {loadError}
-            </div>
-          ) : null}
-
-          {loading ? (
-            <p className="mt-10 text-center text-sm text-[#64748B]">
-              Loading valuations…
-            </p>
-          ) : !loadError && rows.length === 0 ? (
-            <div
-              className="mt-6 rounded-lg border border-dashed px-6 py-14 text-center"
-              style={{ borderColor: border, backgroundColor: '#080A0F' }}
-            >
-              <p className="text-sm font-medium text-[#94A3B8]">
-                No valuation lines yet.
-              </p>
-              <p className="mt-2 text-sm text-[#64748B]">
-                Add trade lines for a period using the form below.
-              </p>
-            </div>
-          ) : !loadError && filteredRows.length === 0 ? (
-            <div
-              className="mt-6 rounded-lg border border-dashed px-6 py-12 text-center"
-              style={{ borderColor: border, backgroundColor: '#080A0F' }}
-            >
-              <p className="text-sm text-[#94A3B8]">
-                No lines for this period. Switch period or add lines.
-              </p>
-            </div>
-          ) : !loadError ? (
-            <div className="mt-6 overflow-x-auto rounded-xl border border-[#1E2535] shadow-[inset_0_1px_0_0_rgba(244,166,35,0.06)]">
-              <table className="w-full min-w-[800px] text-left text-sm">
-                <thead>
-                  <tr
-                    className="border-b text-[11px] font-semibold uppercase tracking-wider text-[#94A3B8]"
+          <div>
+            <div className="cert-side">
+              <div className="cert-hd">
+                <div className="cert-ttl">VALUATION CERT</div>
+                <div className="cert-sub">
+                  Week {weekOrdinal} — {weekRangeStr.split('–')[0]?.trim()}
+                </div>
+              </div>
+              <div className="cert-bd">
+                <div className="cbox cbox-ac">
+                  <div className="cbox-lbl">This Week Certificate</div>
+                  <div className="cbox-val cbox-wk">{formatMoneyGBP(thisWeekCertificate)}</div>
+                </div>
+                <div className="cbox cbox-gr">
+                  <div className="cbox-lbl">Cumulative Drawn</div>
+                  <div className="cbox-val cbox-cum">{formatMoneyGBP(cumulativeDrawnThrough)}</div>
+                  <div className="cbox-sub">
+                    {revisedContract > 0
+                      ? `${((cumulativeDrawnThrough / revisedContract) * 100).toFixed(1)}% of ${formatMoneyGBP(revisedContract)}`
+                      : '—'}
+                  </div>
+                </div>
+                <div className="cbox cbox-rd">
+                  <div className="cbox-lbl">Balance to Draw</div>
+                  <div className="cbox-val cbox-bal">
+                    {revisedContract > 0
+                      ? formatMoneyGBP(Math.max(0, revisedContract - cumulativeDrawnThrough))
+                      : '—'}
+                  </div>
+                </div>
+                <div className="cert-crows">
+                  <div className="crow">
+                    <span className="crow-l">Items claimed</span>
+                    <span className="crow-v" style={{ color: 'var(--bl)' }}>
+                      {itemsClaimedThisWeek}
+                    </span>
+                  </div>
+                  <div className="crow">
+                    <span className="crow-l">Items locked</span>
+                    <span className="crow-v" style={{ color: 'var(--gr)' }}>
+                      {lockedCount}
+                    </span>
+                  </div>
+                  <div className="crow">
+                    <span className="crow-l">Avg % this week</span>
+                    <span className="crow-v" style={{ color: 'var(--tl)' }}>
+                      {avgPctThisWeek != null
+                        ? `${avgPctThisWeek.toFixed(1)}%`
+                        : '—'}
+                    </span>
+                  </div>
+                </div>
+                <div className="cert-bar-lbl">
+                  <span>Drawn vs contract</span>
+                  <span>{certBarPct.toFixed(1)}%</span>
+                </div>
+                <div className="bigbar">
+                  <div
+                    className="bigbar-fill"
                     style={{
-                      borderColor: border,
-                      background:
-                        'linear-gradient(180deg, #121722 0%, #0c0f16 100%)',
+                      width: `${certBarPct}%`,
+                      background: 'linear-gradient(90deg, var(--bl), var(--ac))',
                     }}
-                  >
-                    <th className="px-4 py-4 pl-5">Description</th>
-                    <th className="whitespace-nowrap px-4 py-4 text-right tabular-nums">
-                      Contract value
-                    </th>
-                    <th className="whitespace-nowrap px-4 py-4 text-right tabular-nums">
-                      % this week
-                    </th>
-                    <th className="whitespace-nowrap px-4 py-4 text-right tabular-nums">
-                      Amount this week
-                    </th>
-                    <th className="whitespace-nowrap px-4 py-4 pr-5 text-right tabular-nums">
-                      Cumulative %
-                    </th>
-                    <th className="whitespace-nowrap px-4 py-4">Payment</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#1E2535]">
-                  {filteredRows.map((r) => (
-                    <tr
-                      key={r.id}
-                      className="transition-colors hover:bg-[#121722]/90"
-                    >
-                      <td className="max-w-[280px] px-4 py-3.5 pl-5 text-[#E2E8F8]">
-                        <span className="font-medium text-[#F1F5F9]">
-                          {r.description?.trim() ? r.description : '—'}
-                        </span>
+                  />
+                </div>
+                <button type="button" className="btn btn-ac cert-print" onClick={printCertificate}>
+                  ↓ Print Certificate
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="payment-tracker-wrap">
+        <div className="panel">
+          <div className="ph">
+            <div>
+              <div className="pt">PAYMENT TRACKER</div>
+              <div className="ps">Certificates issued · Mark each as paid when received</div>
+            </div>
+            <div className="pt-meta">
+              <span>
+                Total Paid:{' '}
+                <span style={{ color: 'var(--gr)' }}>{formatMoneyGBP(paidToDate)}</span>
+              </span>
+              <span>
+                Outstanding:{' '}
+                <span style={{ color: 'var(--rd)' }}>{formatMoneyGBP(outstanding)}</span>
+              </span>
+            </div>
+          </div>
+          <div className="pt-table-wrap">
+            <table className="pt-table">
+              <thead>
+                <tr>
+                  <th>Certificate</th>
+                  <th>Amount £</th>
+                  <th>Date Issued</th>
+                  <th>Due Date</th>
+                  <th>Date Paid</th>
+                  <th>Status</th>
+                  <th>Days O/S</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows
+                  .filter((r) => r.status.toLowerCase() === 'paid')
+                  .map((r) => (
+                    <tr key={`pt-${r.id}`}>
+                      <td>{r.week_label}</td>
+                      <td className="td-mono">{formatMoneyGBP(num(r.amount_due))}</td>
+                      <td className="td-mono">
+                        {r.created_at ? formatIsoDateOnly(r.created_at.slice(0, 10)) : '—'}
                       </td>
-                      <td
-                        className="whitespace-nowrap px-4 py-3.5 text-right text-sm font-medium tabular-nums"
-                        style={{ color: accent }}
-                      >
-                        {r.contract_value != null
-                          ? formatMoneyGBP(num(r.contract_value))
-                          : '—'}
+                      <td>—</td>
+                      <td>—</td>
+                      <td>
+                        <span className="badge b-gr">Paid</span>
                       </td>
-                      <td className="whitespace-nowrap px-4 py-3.5 text-right tabular-nums text-[#E2E8F8]">
-                        {formatPercent(r.percent_complete)}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3.5 text-right font-medium tabular-nums text-[#E2E8F8]">
-                        {formatMoneyGBP(num(r.amount_due))}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3.5 pr-5 text-right text-sm font-semibold tabular-nums text-[#F8FAFC]">
-                        {formatPercent(r.cumulative_percent)}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3.5">
-                        <ValuationStatusPill status={r.status} />
-                      </td>
+                      <td>—</td>
                     </tr>
                   ))}
-                  <tr
-                    className="border-t-2 font-semibold"
-                    style={{
-                      borderTopColor: accent,
-                      backgroundColor: 'rgba(244, 166, 35, 0.06)',
-                    }}
-                  >
-                    <td className="px-4 py-4 pl-5 text-[#F8FAFC]">Total</td>
-                    <td
-                      className="whitespace-nowrap px-4 py-4 text-right tabular-nums"
-                      style={{ color: accent }}
-                    >
-                      {formatMoneyGBP(totalContractCol)}
+                {rows.filter((r) => r.status.toLowerCase() === 'paid').length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="val-empty-cell">
+                      No paid certificates yet.
                     </td>
-                    <td className="whitespace-nowrap px-4 py-4 text-right tabular-nums text-[#E2E8F8]">
-                      {avgPctWeek != null
-                        ? formatPercentDisplay(avgPctWeek)
-                        : '—'}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-4 text-right tabular-nums text-[#F8FAFC]">
-                      {formatMoneyGBP(thisWeekCertificate)}
-                    </td>
-                    <td className="whitespace-nowrap px-4 py-4 pr-5 text-right tabular-nums text-[#F8FAFC]">
-                      {avgPctCum != null ? formatPercentDisplay(avgPctCum) : '—'}
-                    </td>
-                    <td className="px-4 py-4 text-xs text-[#64748B]">—</td>
                   </tr>
-                </tbody>
-              </table>
-            </div>
-          ) : null}
+                ) : null}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
-      <div
-        className="rounded-xl border p-5 sm:p-7"
-        style={{ borderColor: border, backgroundColor: surface }}
-      >
-        <h3
-          className="text-sm font-semibold uppercase tracking-wider text-[#64748B]"
-          id="add-valuation-heading"
-        >
-          Add valuation line
-        </h3>
-        <p className="mt-1 text-sm text-[#64748B]">
-          Enter the trade or BOQ item for this certificate period. Cumulative % is
-          the overall progress on that line.
-        </p>
-
-        <form
-          className="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3"
-          onSubmit={handleAdd}
-          aria-labelledby="add-valuation-heading"
-        >
+      <div className="panel val-add-panel">
+        <div className="ph">
           <div>
-            <label
-              htmlFor="val-week"
-              className="mb-1.5 block text-[11px] font-semibold tracking-wider text-[#64748B]"
-            >
-              VALUATION PERIOD
-            </label>
+            <div className="pt">ADD VALUATION LINE</div>
+            <div className="ps">New trade line for a certificate period</div>
+          </div>
+        </div>
+        <div className="cert-bd">
+          <form className="val-add-form" onSubmit={handleAdd}>
             <input
-              id="val-week"
+              type="text"
               value={weekLabel}
               onChange={(e) => setWeekLabel(e.target.value)}
-              placeholder="e.g. Week 12 · 31 Mar – 6 Apr"
-              className={inputClass}
+              placeholder="Week label"
+              className="pi-input"
             />
-          </div>
-          <div className="sm:col-span-2">
-            <label
-              htmlFor="val-desc"
-              className="mb-1.5 block text-[11px] font-semibold tracking-wider text-[#64748B]"
-            >
-              DESCRIPTION (TRADE / ITEM)
-            </label>
             <input
-              id="val-desc"
+              type="text"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
-              placeholder="e.g. Electrical 2nd fix"
-              className={inputClass}
+              placeholder="Description / trade"
+              className="pi-input"
             />
-          </div>
-          <div>
-            <label
-              htmlFor="val-contract"
-              className="mb-1.5 block text-[11px] font-semibold tracking-wider text-[#64748B]"
-            >
-              CONTRACT VALUE (£)
-            </label>
             <input
-              id="val-contract"
               type="number"
-              min={0}
-              step="0.01"
               value={contractValue}
               onChange={(e) => setContractValue(e.target.value)}
-              placeholder="Line value"
-              className={inputClass}
+              placeholder="Contract £"
+              className="pi-input"
             />
-          </div>
-          <div>
-            <label
-              htmlFor="val-pct-week"
-              className="mb-1.5 block text-[11px] font-semibold tracking-wider text-[#64748B]"
-            >
-              % COMPLETE THIS WEEK
-            </label>
             <input
-              id="val-pct-week"
               type="number"
-              min={0}
-              max={100}
-              step="0.1"
               value={percentThisWeekInput}
               onChange={(e) => setPercentThisWeekInput(e.target.value)}
-              placeholder="0–100"
-              className={inputClass}
+              placeholder="This wk %"
+              className="pi-input"
             />
-          </div>
-          <div>
-            <label
-              htmlFor="val-amt-week"
-              className="mb-1.5 block text-[11px] font-semibold tracking-wider text-[#64748B]"
-            >
-              AMOUNT THIS WEEK (£)
-            </label>
             <input
-              id="val-amt-week"
               type="number"
-              step="0.01"
               value={amountThisWeek}
               onChange={(e) => setAmountThisWeek(e.target.value)}
-              placeholder="0.00"
-              className={inputClass}
+              placeholder="This wk £"
+              className="pi-input"
             />
-          </div>
-          <div>
-            <label
-              htmlFor="val-cum-pct"
-              className="mb-1.5 block text-[11px] font-semibold tracking-wider text-[#64748B]"
-            >
-              CUMULATIVE %
-            </label>
             <input
-              id="val-cum-pct"
               type="number"
-              min={0}
-              max={100}
-              step="0.1"
               value={cumulativePercentInput}
               onChange={(e) => setCumulativePercentInput(e.target.value)}
-              placeholder="0–100"
-              className={inputClass}
+              placeholder="Cumulative %"
+              className="pi-input"
             />
-          </div>
-          <div>
-            <label
-              htmlFor="val-status"
-              className="mb-1.5 block text-[11px] font-semibold tracking-wider text-[#64748B]"
-            >
-              PAYMENT STATUS
-            </label>
             <select
-              id="val-status"
               value={lineStatus}
               onChange={(e) =>
                 setLineStatus(e.target.value as 'paid' | 'unpaid')
               }
-              className={inputClass}
+              className="pi-input"
             >
               <option value="unpaid">Unpaid</option>
               <option value="paid">Paid</option>
             </select>
-          </div>
-
+            <button type="submit" disabled={saving} className="btn btn-ac">
+              {saving ? 'Saving…' : 'Add line'}
+            </button>
+          </form>
           {formError ? (
-            <p
-              className="sm:col-span-2 lg:col-span-3 text-sm text-red-400"
-              role="alert"
-            >
+            <p className="val-form-error" role="alert">
               {formError}
             </p>
           ) : null}
-
-          <div className="sm:col-span-2 lg:col-span-3 flex justify-end pt-2">
-            <button
-              type="submit"
-              disabled={saving}
-              className="rounded-lg px-5 py-2.5 text-sm font-semibold text-black transition hover:brightness-110 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#F4A623]/60 focus-visible:ring-offset-2 focus-visible:ring-offset-[#0F1219] disabled:opacity-50"
-              style={{ backgroundColor: accent }}
-            >
-              {saving ? 'Saving…' : 'Add valuation line'}
-            </button>
-          </div>
-        </form>
+        </div>
       </div>
-    </div>
-  )
-}
 
-function projectCvHint(project: ProjectDetail, lineValueSum: number) {
-  if (project.contract_value != null) return null
-  if (lineValueSum <= 0) return null
-  return (
-    <p className="max-w-xs text-right text-xs text-[#64748B]">
-      Project contract sum not set — using sum of BOQ lines in the selected
-      period ({formatMoneyGBP(lineValueSum)}) until a project value is stored.
-    </p>
+      <style jsx>{`
+        .val-portal-root {
+          --bg: #080a0f;
+          --s: #0f1219;
+          --s2: #161b26;
+          --bd: #1e2535;
+          --tx: #e2e8f8;
+          --mu: #4a5568;
+          --ac: #f4a623;
+          --gr: #00e676;
+          --rd: #ff3d57;
+          --bl: #3b8bff;
+          --tl: #00bfa5;
+          --pu: #8b5cf6;
+          color: var(--tx);
+          font-family: 'DM Mono', monospace;
+          font-size: 9px;
+          max-width: 1440px;
+          margin: 0 auto;
+          padding: 20px 28px;
+          position: relative;
+          z-index: 1;
+        }
+        .stats {
+          display: grid;
+          grid-template-columns: repeat(5, 1fr);
+          gap: 10px;
+          margin-bottom: 16px;
+        }
+        .sc {
+          background: var(--s);
+          border: 1px solid var(--bd);
+          border-radius: 12px;
+          padding: 12px 14px;
+          position: relative;
+          overflow: hidden;
+        }
+        .sc::before {
+          content: '';
+          position: absolute;
+          top: 0;
+          left: 0;
+          right: 0;
+          height: 2px;
+          border-radius: 12px 12px 0 0;
+        }
+        .sc.a::before {
+          background: var(--ac);
+        }
+        .sc.g::before {
+          background: var(--gr);
+        }
+        .sc.b::before {
+          background: var(--bl);
+        }
+        .sc.p::before {
+          background: var(--pu);
+        }
+        .sc.t::before {
+          background: var(--tl);
+        }
+        .sl {
+          font-size: 9px;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          color: var(--mu);
+          margin-bottom: 3px;
+        }
+        .sv {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 22px;
+          letter-spacing: 1px;
+          line-height: 1;
+        }
+        .ss {
+          font-size: 9px;
+          color: var(--mu);
+          margin-top: 2px;
+        }
+        .portal-live-panel {
+          background: var(--s);
+          border: 1px solid var(--bd);
+          border-radius: 12px;
+          padding: 12px;
+        }
+        .plp-title {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 18px;
+          letter-spacing: 1.6px;
+          color: #f8fafc;
+          margin-bottom: 10px;
+        }
+        .plp-card {
+          background: #080a0f;
+          border: 1px solid var(--bd);
+          border-radius: 10px;
+          padding: 10px;
+        }
+        .plp-card.accent {
+          background: rgba(244, 166, 35, 0.05);
+          border-color: rgba(244, 166, 35, 0.2);
+        }
+        .plp-card.success {
+          background: rgba(0, 230, 118, 0.05);
+          border-color: rgba(0, 230, 118, 0.2);
+        }
+        .plp-card.warn {
+          background: rgba(255, 61, 87, 0.05);
+          border-color: rgba(255, 61, 87, 0.2);
+        }
+        .plp-label {
+          font-size: 9px;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          color: var(--mu);
+        }
+        .plp-value {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 26px;
+          margin-top: 4px;
+        }
+        .plp-sub {
+          font-size: 9px;
+          color: var(--mu);
+          margin-top: 3px;
+        }
+        .wk-bar {
+          background: var(--s);
+          border: 1px solid var(--bd);
+          border-radius: 12px;
+          padding: 12px 18px;
+          margin-bottom: 14px;
+          display: flex;
+          align-items: center;
+          gap: 16px;
+          flex-wrap: wrap;
+        }
+        .wk-bar-lbl {
+          font-size: 9px;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          color: var(--mu);
+          margin-bottom: 3px;
+        }
+        .wk-nav-btn {
+          background: var(--s2);
+          border: 1px solid var(--bd);
+          border-radius: 6px;
+          padding: 5px 11px;
+          font-size: 12px;
+          color: var(--tx);
+          cursor: pointer;
+        }
+        .wk-nav-btn:hover:not(:disabled) {
+          border-color: var(--ac);
+          color: var(--ac);
+        }
+        .wk-nav-btn:disabled {
+          opacity: 0.35;
+          cursor: not-allowed;
+        }
+        .wk-disp {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 20px;
+          letter-spacing: 2px;
+          color: var(--ac);
+          min-width: 110px;
+          text-align: center;
+        }
+        .wk-dates-lbl {
+          font-size: 10px;
+          color: var(--mu);
+          text-align: center;
+        }
+        .wk-prog-track {
+          height: 7px;
+          background: var(--s2);
+          border-radius: 3px;
+          overflow: hidden;
+          border: 1px solid var(--bd);
+        }
+        .wk-prog-fill {
+          height: 100%;
+          background: linear-gradient(90deg, #b37200, #f4a623);
+          border-radius: 3px;
+          transition: width 0.4s;
+        }
+        .wk-prog-meta {
+          display: flex;
+          justify-content: space-between;
+          margin-top: 2px;
+          font-size: 9px;
+          color: var(--mu);
+        }
+        .wk-cert-live {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 24px;
+          letter-spacing: 1px;
+          color: var(--gr);
+        }
+        .btn {
+          font-family: 'Outfit', sans-serif;
+          font-size: 12px;
+          font-weight: 500;
+          padding: 7px 13px;
+          border-radius: 7px;
+          cursor: pointer;
+          border: 1px solid transparent;
+        }
+        .btn-ac {
+          background: var(--ac);
+          color: #000;
+          border-color: var(--ac);
+        }
+        .btn-ghost {
+          background: transparent;
+          border-color: var(--bd);
+          color: var(--tx);
+        }
+        .btn-tl {
+          background: rgba(0, 191, 165, 0.1);
+          border-color: rgba(0, 191, 165, 0.3);
+          color: var(--tl);
+        }
+        .alert {
+          border-radius: 9px;
+          padding: 9px 13px;
+          margin-bottom: 13px;
+          display: flex;
+          align-items: center;
+          gap: 9px;
+          font-size: 12px;
+        }
+        .al-i {
+          background: rgba(59, 139, 255, 0.07);
+          border: 1px solid rgba(59, 139, 255, 0.2);
+          color: var(--bl);
+        }
+        .two-col {
+          display: grid;
+          grid-template-columns: 1fr 300px;
+          gap: 14px;
+          align-items: start;
+        }
+        .panel {
+          background: var(--s);
+          border: 1px solid var(--bd);
+          border-radius: 16px;
+          overflow: hidden;
+          margin-bottom: 14px;
+        }
+        .ph {
+          padding: 12px 18px;
+          border-bottom: 1px solid var(--bd);
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          background: rgba(244, 166, 35, 0.03);
+        }
+        .pt {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 16px;
+          letter-spacing: 2px;
+        }
+        .ps {
+          font-size: 10px;
+          color: var(--mu);
+        }
+        .ph-hint {
+          font-size: 9px;
+          color: var(--mu);
+        }
+        .vtbl-wrap {
+          overflow-x: auto;
+          max-height: 60vh;
+          overflow-y: auto;
+        }
+        .vtbl {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        .vtbl thead th {
+          background: var(--s2);
+          color: var(--mu);
+          font-size: 9px;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          padding: 8px 9px;
+          text-align: left;
+          border-bottom: 1px solid var(--bd);
+          white-space: nowrap;
+          position: sticky;
+          top: 0;
+          z-index: 5;
+        }
+        .th-claimed {
+          background: rgba(0, 230, 118, 0.08) !important;
+          color: var(--gr) !important;
+        }
+        .th-pctsplit {
+          background: rgba(0, 191, 165, 0.08) !important;
+          color: var(--tl) !important;
+          min-width: 160px;
+        }
+        .vtbl td {
+          padding: 5px 9px;
+          border-bottom: 1px solid rgba(30, 37, 53, 0.8);
+          vertical-align: middle;
+          font-size: 11px;
+        }
+        .ph-cell {
+          background: rgba(244, 166, 35, 0.04);
+          font-size: 9px;
+          font-weight: 600;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+          color: var(--mu);
+          padding: 4px 9px;
+        }
+        .locked-row-bg {
+          background: rgba(0, 230, 118, 0.03);
+        }
+        .dimmed {
+          opacity: 0.38;
+        }
+        .td-item {
+          font-weight: 500;
+          padding: 5px 9px;
+        }
+        .dot-active {
+          display: inline-block;
+          width: 5px;
+          height: 5px;
+          border-radius: 50%;
+          background: var(--gr);
+          margin-right: 4px;
+          vertical-align: middle;
+        }
+        .td-mono {
+          font-size: 10px;
+        }
+        .td-mu {
+          color: var(--mu);
+        }
+        .td-claimed {
+          background: rgba(0, 230, 118, 0.04);
+        }
+        .td-claimed-inner {
+          font-size: 11px;
+          font-weight: 500;
+          color: var(--tl);
+        }
+        .td-split {
+          background: rgba(0, 191, 165, 0.04);
+          min-width: 160px;
+        }
+        .split-bar-wrap {
+          flex: 1;
+          height: 12px;
+          background: var(--s2);
+          border-radius: 3px;
+          overflow: hidden;
+          border: 1px solid var(--bd);
+        }
+        .split-bar-fill {
+          height: 100%;
+          border-radius: 3px;
+          transition: width 0.3s;
+        }
+        .split-meta {
+          display: flex;
+          justify-content: space-between;
+          margin-top: 3px;
+  font-size: 9px;
+        }
+        .c-tl {
+          color: var(--tl);
+        }
+        .c-rd {
+          color: var(--rd);
+        }
+        .pi {
+          width: 52px;
+          font-size: 11px;
+          padding: 3px 5px;
+          border: 1px solid var(--bd);
+          border-radius: 4px;
+          background: var(--s2);
+          color: var(--tx);
+          text-align: center;
+        }
+        .pi:focus {
+          border-color: var(--ac);
+          outline: none;
+        }
+        .pi.hv {
+          border-color: rgba(244, 166, 35, 0.4);
+          color: var(--ac);
+        }
+        .pi:disabled {
+          opacity: 0.35;
+          cursor: not-allowed;
+        }
+        .badge {
+          display: inline-flex;
+          align-items: center;
+          padding: 2px 7px;
+          border-radius: 4px;
+          font-size: 9px;
+          white-space: nowrap;
+        }
+        .b-ac {
+          background: rgba(244, 166, 35, 0.1);
+          color: var(--ac);
+        }
+        .b-mu {
+          background: rgba(74, 85, 104, 0.2);
+          color: var(--mu);
+        }
+        .b-gr {
+          background: rgba(0, 230, 118, 0.1);
+          color: var(--gr);
+        }
+        .lock-btn {
+          background: transparent;
+          border: 1px solid var(--bd);
+          border-radius: 4px;
+          color: var(--mu);
+          font-size: 9px;
+          padding: 2px 6px;
+          cursor: pointer;
+          font-family: 'DM Mono', monospace;
+        }
+        .lock-btn:hover {
+          border-color: var(--gr);
+          color: var(--gr);
+        }
+        .lock-btn.lkd {
+          background: rgba(0, 230, 118, 0.08);
+          border-color: rgba(0, 230, 118, 0.3);
+          color: var(--gr);
+        }
+        .foot-totals td {
+          border-top: 2px solid var(--bd);
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 13px;
+          letter-spacing: 1px;
+        }
+        .foot-ac {
+          color: var(--ac);
+        }
+        .foot-mu {
+          font-size: 11px;
+          color: var(--mu);
+        }
+        .foot-gr {
+          font-size: 15px;
+          color: var(--gr);
+        }
+        .foot-claimed {
+          font-size: 15px;
+          color: var(--tl);
+          background: rgba(0, 230, 118, 0.06);
+        }
+        .foot-rd {
+          font-size: 14px;
+          color: var(--rd);
+        }
+        .vtbl-footnote {
+          padding: 7px 12px;
+          font-size: 9px;
+          color: var(--mu);
+          border-top: 1px solid var(--bd);
+        }
+        .cert-side {
+          background: var(--s);
+          border: 1px solid var(--bd);
+          border-radius: 14px;
+          overflow: hidden;
+          position: sticky;
+          top: 110px;
+        }
+        .cert-hd {
+          background: linear-gradient(
+            135deg,
+            rgba(244, 166, 35, 0.08),
+            rgba(0, 230, 118, 0.04)
+          );
+          border-bottom: 1px solid var(--bd);
+          padding: 13px 16px;
+        }
+        .cert-ttl {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 17px;
+          letter-spacing: 2px;
+          color: var(--ac);
+        }
+        .cert-sub {
+          font-size: 9px;
+          color: var(--mu);
+          margin-top: 1px;
+        }
+        .cert-bd {
+          padding: 13px 15px;
+        }
+        .cbox {
+          border-radius: 9px;
+          padding: 11px 13px;
+          text-align: center;
+          margin-bottom: 9px;
+        }
+        .cbox-ac {
+          background: rgba(244, 166, 35, 0.06);
+          border: 1px solid rgba(244, 166, 35, 0.2);
+        }
+        .cbox-gr {
+          background: rgba(0, 230, 118, 0.05);
+          border: 1px solid rgba(0, 230, 118, 0.15);
+        }
+        .cbox-rd {
+          background: rgba(255, 61, 87, 0.04);
+          border: 1px solid rgba(255, 61, 87, 0.15);
+        }
+        .cbox-lbl {
+          font-size: 9px;
+          letter-spacing: 1.5px;
+          text-transform: uppercase;
+          color: var(--mu);
+          margin-bottom: 3px;
+        }
+        .cbox-val {
+          font-family: 'Bebas Neue', sans-serif;
+          letter-spacing: 1px;
+        }
+        .cbox-wk {
+          font-size: 32px;
+          color: var(--ac);
+        }
+        .cbox-cum {
+          font-size: 20px;
+          color: var(--gr);
+        }
+        .cbox-bal {
+          font-size: 17px;
+          color: var(--rd);
+        }
+        .cbox-sub {
+          font-size: 9px;
+          color: var(--mu);
+          margin-top: 2px;
+        }
+        .cert-crows {
+          margin-bottom: 10px;
+        }
+        .crow {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          padding: 5px 0;
+          border-bottom: 1px solid rgba(30, 37, 53, 0.7);
+          font-size: 11px;
+        }
+        .crow:last-child {
+          border-bottom: none;
+        }
+        .crow-l {
+          color: var(--mu);
+        }
+        .crow-v {
+          font-family: 'Bebas Neue', sans-serif;
+          font-size: 14px;
+        }
+        .cert-bar-lbl {
+          font-size: 9px;
+          color: var(--mu);
+          margin-bottom: 4px;
+          display: flex;
+          justify-content: space-between;
+        }
+        .bigbar {
+          height: 8px;
+          background: var(--s2);
+          border-radius: 4px;
+          overflow: hidden;
+          border: 1px solid var(--bd);
+          margin: 4px 0;
+        }
+        .bigbar-fill {
+          height: 100%;
+          border-radius: 4px;
+          transition: width 0.6s;
+        }
+        .cert-print {
+          width: 100%;
+          margin-top: 12px;
+        }
+        .payment-tracker-wrap {
+          padding: 0 0 20px;
+        }
+        .pt-meta {
+          display: flex;
+          gap: 8px;
+          font-size: 10px;
+          color: var(--mu);
+          flex-wrap: wrap;
+        }
+        .pt-table-wrap {
+          overflow-x: auto;
+        }
+        .pt-table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        .pt-table th {
+          text-align: left;
+          color: var(--mu);
+          font-size: 9px;
+          letter-spacing: 1px;
+          text-transform: uppercase;
+          padding: 8px 12px;
+          border-bottom: 1px solid var(--bd);
+          background: var(--s2);
+        }
+        .pt-table td {
+          padding: 8px 12px;
+          border-bottom: 1px solid rgba(30, 37, 53, 0.7);
+          font-size: 11px;
+        }
+        .val-add-form {
+          display: grid;
+          grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+          gap: 8px;
+          align-items: end;
+        }
+        .pi-input {
+          padding: 6px 8px;
+          border: 1px solid var(--bd);
+          border-radius: 4px;
+          background: var(--s2);
+          color: var(--tx);
+          font-size: 11px;
+        }
+        .val-add-panel {
+          margin-top: 8px;
+        }
+        .val-add-panel .pt {
+          font-size: 14px;
+        }
+        .val-portal-error {
+          padding: 12px;
+          border: 1px solid rgba(255, 61, 87, 0.4);
+          border-radius: 8px;
+          color: #fecaca;
+          margin-bottom: 12px;
+        }
+        .val-loading {
+          text-align: center;
+          padding: 24px;
+          color: var(--mu);
+        }
+        .val-empty-cell {
+          text-align: center;
+          color: var(--mu);
+          padding: 16px;
+        }
+        .val-form-error {
+          color: #fecaca;
+          margin-top: 8px;
+          font-size: 10px;
+        }
+        @media (max-width: 1024px) {
+          .two-col {
+            grid-template-columns: 1fr;
+          }
+          .cert-side {
+            position: relative;
+            top: 0;
+          }
+          .stats {
+            grid-template-columns: repeat(2, 1fr);
+          }
+        }
+      `}</style>
+    </div>
   )
 }
 
