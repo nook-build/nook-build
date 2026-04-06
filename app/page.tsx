@@ -62,5 +62,4 @@ export default function Home() {
       </main>
     </div>
   );
-}
-curl -o app/dashboard/page.tsx https://raw.githubusercontent.com/nook-build/nook-build/main/app/dashboard/page.tsx
+}git add . && git commit -m "Fix page.tsx" && git push
