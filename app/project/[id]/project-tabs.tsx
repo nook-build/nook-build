@@ -3040,6 +3040,72 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     }
   }, [project.id])
 
+  const [programmeDelayWorkingDays, setProgrammeDelayWorkingDays] = useState(0)
+  const [programmeVariationDays, setProgrammeVariationDays] = useState(0)
+  const [programmeApprovedVariationsCount, setProgrammeApprovedVariationsCount] =
+    useState(0)
+  const [programmeImpactLoading, setProgrammeImpactLoading] = useState(true)
+  const [programmeImpactError, setProgrammeImpactError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadProgrammeImpact() {
+      setProgrammeImpactError('')
+      const [delaysRes, varsRes] = await Promise.all([
+        supabase
+          .from('delays')
+          .select('duration, unit')
+          .eq('project_id', project.id),
+        supabase
+          .from('variations')
+          .select('prog_days, status')
+          .eq('project_id', project.id),
+      ])
+      if (cancelled) return
+      const errs = [delaysRes.error?.message, varsRes.error?.message].filter(
+        Boolean,
+      )
+      if (errs.length > 0) {
+        setProgrammeImpactError(errs.join(' · '))
+      }
+      const delayRows = (delaysRes.data ?? []) as Record<string, unknown>[]
+      const delayW = delayRows.reduce(
+        (s, row) => s + delayRecordToWorkingDays(row),
+        0,
+      )
+      setProgrammeDelayWorkingDays(delayW)
+
+      const varRows = (varsRes.data ?? []) as Record<string, unknown>[]
+      let vSum = 0
+      let vCount = 0
+      for (const row of varRows) {
+        if (String(row.status ?? '').toLowerCase() !== 'approved') continue
+        vSum += Math.max(0, Number(row.prog_days ?? 0))
+        vCount += 1
+      }
+      setProgrammeVariationDays(vSum)
+      setProgrammeApprovedVariationsCount(vCount)
+      setProgrammeImpactLoading(false)
+    }
+    void loadProgrammeImpact()
+    const interval = setInterval(() => void loadProgrammeImpact(), 30_000)
+    function onVis() {
+      if (document.visibilityState === 'visible') void loadProgrammeImpact()
+    }
+    document.addEventListener('visibilitychange', onVis)
+    return () => {
+      cancelled = true
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', onVis)
+    }
+  }, [project.id])
+
+  const [liveTick, setLiveTick] = useState(0)
+  useEffect(() => {
+    const id = setInterval(() => setLiveTick((t) => t + 1), 60_000)
+    return () => clearInterval(id)
+  }, [])
+
   const minWeek = useMemo(
     () => Math.min(...rows.map((r) => r.start_week), 1),
     [rows],
@@ -3099,10 +3165,11 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
   }, [weekMeta])
 
   const todayWeek = useMemo(() => {
+    void liveTick
     const nowMs = todayUtcMidnightMs()
     const elapsedDays = (nowMs - projectStartMs) / 86400000
     return Math.max(1, Math.floor(elapsedDays / 7) + 1)
-  }, [projectStartMs])
+  }, [projectStartMs, liveTick])
 
   const todayLineLeftPct = useMemo(() => {
     if (weekRange.length === 0) return null
@@ -3112,15 +3179,15 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     return Math.max(0, Math.min(100, pos))
   }, [todayWeek, minWeek, maxWeek, weekRange.length])
 
-  const delayDays = Math.max(0, project.total_delays_days ?? 0)
-  const variationDays = Math.max(0, Math.round(Math.abs(num(project.variations_total)) / 10000))
-  const variationsCount = num(project.variations_total) === 0 ? 0 : 1
+  const delayDays = programmeDelayWorkingDays
+  const variationDays = programmeVariationDays
+  const variationsCount = programmeApprovedVariationsCount
   const totalProgrammeShift = delayDays + variationDays
   const revisedEndDate = useMemo(() => {
     if (!project.handover_date) return '—'
     const endMs = utcMillisFromIsoDate(project.handover_date)
     if (endMs == null) return '—'
-    const shifted = endMs + totalProgrammeShift * 86400000
+    const shifted = addUtcWorkingDays(endMs, totalProgrammeShift)
     return formatIsoDateOnly(new Date(shifted).toISOString())
   }, [project.handover_date, totalProgrammeShift])
 
@@ -3195,7 +3262,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     const handover = utcMillisFromIsoDate(project.handover_date)
     const shifted =
       handover != null
-        ? handover + totalProgrammeShift * 86400000 + 14 * 86400000
+        ? addUtcWorkingDays(handover, totalProgrammeShift) + 14 * 86400000
         : null
     const programmeEnd =
       weekMeta.length > 0
@@ -3263,30 +3330,47 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
           <div className="portal-live-grid">
             <div className="plp-card warn">
               <div className="plp-label">Delay Days</div>
-              <div className="plp-value" style={{ color: '#FF3D57' }}>{delayDays}</div>
-              <div className="plp-sub">Calendar days lost</div>
+              <div className="plp-value" style={{ color: '#FF3D57' }}>
+                {programmeImpactLoading ? '…' : delayDays}
+              </div>
+              <div className="plp-sub">Working days (Mon–Fri)</div>
             </div>
             <div className="plp-card warn">
               <div className="plp-label">Revised End Date</div>
-              <div className="plp-value date">{revisedEndDate}</div>
-              <div className="plp-sub">Original: {formatIsoDateOnly(project.handover_date)}</div>
+              <div className="plp-value date">
+                {programmeImpactLoading ? '…' : revisedEndDate}
+              </div>
+              <div className="plp-sub">
+                Original: {formatIsoDateOnly(project.handover_date)}
+              </div>
             </div>
             <div className="plp-card accent">
               <div className="plp-label">Variation Days</div>
-              <div className="plp-value" style={{ color: '#F4A623' }}>{variationDays}</div>
-              <div className="plp-sub">Added to programme</div>
+              <div className="plp-value" style={{ color: '#F4A623' }}>
+                {programmeImpactLoading ? '…' : variationDays}
+              </div>
+              <div className="plp-sub">Approved VO prog. days</div>
             </div>
             <div className="plp-card accent">
               <div className="plp-label">Variations Count</div>
-              <div className="plp-value" style={{ color: '#F4A623' }}>{variationsCount}</div>
-              <div className="plp-sub">Logged variations</div>
+              <div className="plp-value" style={{ color: '#F4A623' }}>
+                {programmeImpactLoading ? '…' : variationsCount}
+              </div>
+              <div className="plp-sub">Approved variations</div>
             </div>
             <div className="plp-card">
               <div className="plp-label">Total Programme Shift</div>
-              <div className="plp-value" style={{ color: '#3B8BFF' }}>{totalProgrammeShift} days</div>
-              <div className="plp-sub">Delays + variation days</div>
+              <div className="plp-value" style={{ color: '#3B8BFF' }}>
+                {programmeImpactLoading ? '…' : `${totalProgrammeShift} days`}
+              </div>
+              <div className="plp-sub">Delays + variation days (working)</div>
             </div>
           </div>
+          {programmeImpactError ? (
+            <p className="mt-3 text-sm text-[#FF3D57]">
+              Programme impact: {programmeImpactError}
+            </p>
+          ) : null}
           {loadError ? (
             <p className="mt-3 text-sm text-[#FF3D57]">
               Could not load programme_items: {loadError}. Showing defaults.
@@ -4078,6 +4162,36 @@ function utcMillisFromIsoDate(iso: string | null | undefined): number | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso.trim())
   if (!m) return null
   return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+}
+
+/** Approximate Mon–Fri days from a calendar-day count when no span start is known. */
+function calendarDaysToApproxWorkingDays(calendarDays: number): number {
+  if (calendarDays <= 0) return 0
+  return Math.round((calendarDays * 5) / 7)
+}
+
+/** Delays table: weeks → working days (5 per week); days → approx working from calendar length. */
+function delayRecordToWorkingDays(row: {
+  duration?: unknown
+  unit?: unknown
+}): number {
+  const duration = Math.max(0, Number(row.duration ?? 0))
+  const unit = String(row.unit ?? 'days').toLowerCase()
+  if (unit === 'weeks') return Math.round(duration * 5)
+  return calendarDaysToApproxWorkingDays(duration)
+}
+
+/** Advance UTC midnight by N weekdays (skips Saturday and Sunday). */
+function addUtcWorkingDays(startMs: number, workingDaysToAdd: number): number {
+  if (workingDaysToAdd <= 0) return startMs
+  let t = startMs
+  let remaining = workingDaysToAdd
+  while (remaining > 0) {
+    t += 86400000
+    const wd = new Date(t).getUTCDay()
+    if (wd !== 0 && wd !== 6) remaining -= 1
+  }
+  return t
 }
 
 function todayUtcMidnightMs(): number {
