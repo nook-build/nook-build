@@ -848,7 +848,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                               max={100}
                               step={0.5}
                               disabled={locked}
-                              value={pctInputs[r.id] ?? ''}
+                              value={pctInputs[r.id] !== undefined ? pctInputs[r.id] : String(num(r.percentage) || '')}
                               onChange={(e) => handlePctChange(r, e.target.value)}
                               onBlur={(e) => void savePctOnBlur(r, e.target.value)}
                               className="w-[72px] rounded border border-[#F4A623] bg-[#1E2535] px-2 py-1 text-center text-xs text-[#F4A623] disabled:cursor-not-allowed disabled:opacity-50"
