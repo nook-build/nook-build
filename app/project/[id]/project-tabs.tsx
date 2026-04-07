@@ -468,6 +468,13 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   const [amtDraft, setAmtDraft] = useState<Record<string, number>>({})
   const [lockedIds, setLockedIds] = useState<Set<string>>(new Set())
   const lockStorageKey = `nook-valuation-locks:${project.id}`
+  const isMountedRef = useRef(true)
+
+  useEffect(() => {
+    return () => {
+      isMountedRef.current = false
+    }
+  }, [])
 
   useEffect(() => {
     try {
@@ -479,66 +486,63 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     }
   }, [lockStorageKey])
 
-  useEffect(() => {
-    let cancelled = false
-    async function loadOnce() {
-      if (document.activeElement?.tagName === 'INPUT') return
-      setLoading(true)
-      setError('')
-      const [vRes, cRes, pRes, voRes] = await Promise.all([
-        supabase
-          .from('valuations')
-          .select('*')
-          .eq('project_id', project.id)
-          .order('line_order', { ascending: true }),
-        supabase
-          .from('certificates')
-          .select('*')
-          .eq('project_id', project.id)
-          .order('date_issued', { ascending: true }),
-        supabase
-          .from('programme_items')
-          .select('trade_name, phase')
-          .eq('project_id', project.id)
-          .order('start_week', { ascending: true }),
-        supabase
-          .from('variations')
-          .select('id, vo_number, description, trade, value, status')
-          .eq('project_id', project.id),
-      ])
-      if (cancelled) return
+  const loadRowsOnce = useCallback(async () => {
+    setLoading(true)
+    setError('')
+    const [vRes, cRes, pRes, voRes] = await Promise.all([
+      supabase
+        .from('valuations')
+        .select('*')
+        .eq('project_id', project.id)
+        .order('line_order', { ascending: true }),
+      supabase
+        .from('certificates')
+        .select('*')
+        .eq('project_id', project.id)
+        .order('date_issued', { ascending: true }),
+      supabase
+        .from('programme_items')
+        .select('trade_name, phase')
+        .eq('project_id', project.id)
+        .order('start_week', { ascending: true }),
+      supabase
+        .from('variations')
+        .select('id, vo_number, description, trade, value, status')
+        .eq('project_id', project.id),
+    ])
 
-      const errs = [
-        vRes.error?.message,
-        cRes.error?.message,
-        pRes.error?.message,
-        voRes.error?.message,
-      ].filter(Boolean)
-      if (errs.length > 0) setError(errs.join(' · '))
+    if (!isMountedRef.current) return
 
-      setRows(normalizeValuationRows((vRes.data ?? []) as Record<string, unknown>[]))
-      setCertificates((cRes.data ?? []) as CertificateRecord[])
-      setProgrammeItems((pRes.data ?? []) as { trade_name: string; phase: string }[])
+    const errs = [
+      vRes.error?.message,
+      cRes.error?.message,
+      pRes.error?.message,
+      voRes.error?.message,
+    ].filter(Boolean)
+    if (errs.length > 0) setError(errs.join(' · '))
 
-      const voRows = ((voRes.data ?? []) as Record<string, unknown>[]).filter(
-        (v) => String(v.status ?? '').toLowerCase() === 'approved',
-      )
-      setApprovedVariations(
-        voRows.map((v) => ({
-          id: String(v.id ?? ''),
-          voNumber: String(v.vo_number ?? '').trim() || 'VO',
-          description: String(v.description ?? ''),
-          trade: String(v.trade ?? '—'),
-          value: num(v.value as number | string | null | undefined),
-        })),
-      )
-      setLoading(false)
-    }
-    void loadOnce()
-    return () => {
-      cancelled = true
-    }
+    setRows(normalizeValuationRows((vRes.data ?? []) as Record<string, unknown>[]))
+    setCertificates((cRes.data ?? []) as CertificateRecord[])
+    setProgrammeItems((pRes.data ?? []) as { trade_name: string; phase: string }[])
+
+    const voRows = ((voRes.data ?? []) as Record<string, unknown>[]).filter(
+      (v) => String(v.status ?? '').toLowerCase() === 'approved',
+    )
+    setApprovedVariations(
+      voRows.map((v) => ({
+        id: String(v.id ?? ''),
+        voNumber: String(v.vo_number ?? '').trim() || 'VO',
+        description: String(v.description ?? ''),
+        trade: String(v.trade ?? '—'),
+        value: num(v.value as number | string | null | undefined),
+      })),
+    )
+    setLoading(false)
   }, [project.id])
+
+  useEffect(() => {
+    void loadRowsOnce()
+  }, [])
 
   const chronWeeks = useMemo(() => valuationChronologicalWeekLabels(rows), [rows])
   const activePeriod = useMemo(() => {
@@ -720,6 +724,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
             onClick={() => {
               const idx = Math.max(0, chronWeeks.indexOf(activePeriod ?? '') - 1)
               setPeriodOverride(chronWeeks[idx] ?? null)
+              void loadRowsOnce()
             }}
           >
             Prev
@@ -733,6 +738,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                 chronWeeks.indexOf(activePeriod ?? '') + 1,
               )
               setPeriodOverride(chronWeeks[idx] ?? null)
+              void loadRowsOnce()
             }}
           >
             Next
