@@ -485,7 +485,6 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   >([])
   const [voPctThisWeek, setVoPctThisWeek] = useState<Record<string, number>>({})
   const [pctDraft, setPctDraft] = useState<Record<string, string>>({})
-  const [focusedPctRowId, setFocusedPctRowId] = useState<string | null>(null)
 
   useEffect(() => {
     try {
@@ -1236,6 +1235,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                             const claimedPct = cv > 0 ? (claimed / cv) * 100 : 0
                             const leftPct = 100 - claimedPct
                             const locked = lockedIds.has(r.id)
+                            const pctRow = pctW ?? 0
                             const isDim =
                               pctW === 0 || pctW == null
                                 ? !locked
@@ -1275,51 +1275,41 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     min={0}
                                     max={100}
                                     step={0.5}
-                                    style={{
-                                      pointerEvents: 'auto',
-                                      background:
-                                        focusedPctRowId === r.id
-                                          ? 'rgba(255, 61, 87, 0.28)'
-                                          : undefined,
-                                    }}
+                                    style={{ pointerEvents: 'auto' }}
                                     value={
                                       pctDraft[r.id] !== undefined
                                         ? pctDraft[r.id]
-                                        : pctW != null
-                                          ? String(pctW)
-                                          : ''
+                                        : String(pctRow)
                                     }
                                     placeholder="0"
                                     onClick={(e) => e.stopPropagation()}
                                     onMouseDown={(e) => e.stopPropagation()}
                                     onFocus={() => {
-                                      setFocusedPctRowId(r.id)
                                       setPctDraft((d) => ({
                                         ...d,
-                                        [r.id]:
-                                          pctW != null ? String(pctW) : '',
+                                        [r.id]: String(pctRow),
                                       }))
                                     }}
                                     onBlur={(e) => {
-                                      setFocusedPctRowId((prev) =>
-                                        prev === r.id ? null : prev,
-                                      )
                                       const raw = e.target.value.trim()
                                       setPctDraft((d) => {
                                         const next = { ...d }
                                         delete next[r.id]
                                         return next
                                       })
-                                      const v =
+                                      const parsed =
                                         raw === '' ||
                                         raw === '.' ||
                                         raw === '-'
                                           ? 0
                                           : parseFloat(raw)
-                                      if (Number.isNaN(v)) {
+                                      if (Number.isNaN(parsed)) {
                                         void updateRowPct(r, 0)
                                       } else {
-                                        void updateRowPct(r, v)
+                                        void updateRowPct(
+                                          r,
+                                          Math.min(100, Math.max(0, parsed)),
+                                        )
                                       }
                                     }}
                                     onChange={(e) => {
@@ -1334,9 +1324,9 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                         patchRowPctLocal(r, 0)
                                         return
                                       }
-                                      const v = parseFloat(raw)
-                                      if (Number.isNaN(v)) return
-                                      void updateRowPct(r, v)
+                                      const n = parseFloat(raw)
+                                      if (Number.isNaN(n)) return
+                                      patchRowPctLocal(r, Math.min(100, Math.max(0, n)))
                                     }}
                                   />
                                 </td>
