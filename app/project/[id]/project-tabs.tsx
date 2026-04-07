@@ -3379,6 +3379,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
         setProgrammeImpactError(errs.join(' · '))
       }
       const delayRows = (delaysRes.data ?? []) as Record<string, unknown>[]
+      console.log('[delays] raw programme impact rows', delayRows)
       const delayW = delayRows.reduce(
         (s, row) => s + delayRecordToWorkingDays(row),
         0,
@@ -4844,12 +4845,15 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         ),
       )
       setCertificates((certsRes.data ?? []) as CertificateRecord[])
+      console.log(
+        '[delays] raw command-centre rows',
+        (delaysRes.data ?? []) as Record<string, unknown>[],
+      )
       setDelayLogs(
         ((delaysRes.data ?? []) as Record<string, unknown>[]).map((d) => {
-          const duration = Number(d.duration ?? d.days_lost ?? 0)
+          const duration = Number(d.duration ?? 0)
           const unit = String(d.unit ?? 'days')
-          const calendarDays =
-            unit === 'weeks' ? duration * 7 : Number(d.duration ?? d.days_lost ?? 0)
+          const calendarDays = unit === 'weeks' ? duration * 7 : duration
           return {
             id: String(d.id ?? crypto.randomUUID()),
             startWeek: Number(d.start_week ?? 1),
@@ -5231,7 +5235,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       const calDays =
         String(inserted.unit ?? delayUnit) === 'weeks'
           ? Number(inserted.duration ?? raw) * 7
-          : Number(inserted.duration ?? inserted.days_lost ?? days)
+          : Number(inserted.duration ?? raw)
       setDelayLogs((prev) => [
         ...prev,
         {
