@@ -5036,18 +5036,23 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       ? Math.max(0, revisedContract - totalDrawn)
       : null
 
-  const totalHandoverWorkingShift = useMemo(() => {
-    const delayW = delayLogs.reduce((s, d) => s + (d.workingDays ?? 0), 0)
-    const varProg = variationRows
-      .filter((v) => v.status === 'approved')
-      .reduce((s, v) => s + v.programmeDays, 0)
-    return delayW + varProg
-  }, [delayLogs, variationRows])
+  const totalDelayDays = useMemo(
+    () => delayLogs.reduce((s, d) => s + (d.workingDays ?? 0), 0),
+    [delayLogs],
+  )
+  const totalVariationDays = useMemo(
+    () =>
+      variationRows
+        .filter((v) => v.status === 'approved')
+        .reduce((s, v) => s + Math.max(0, Number(v.programmeDays ?? 0)), 0),
+    [variationRows],
+  )
+  const totalDelayWeeks = Math.round((totalDelayDays / 5) * 10) / 10
 
   const revisedHandoverIso = useMemo(() => {
     if (!project.handover_date) return null
-    return addWorkingDaysIso(project.handover_date, totalHandoverWorkingShift)
-  }, [project.handover_date, totalHandoverWorkingShift])
+    return addWorkingDaysIso(project.handover_date, totalDelayDays)
+  }, [project.handover_date, totalDelayDays])
 
   const effectiveHandoverIso =
     revisedHandoverIso ?? project.handover_date ?? null
@@ -5113,12 +5118,6 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         .reduce((s, r) => s + num(r.amount_due), 0)
     : 0
 
-  const totalDelayDays = useMemo(
-    () => delayLogs.reduce((s, d) => s + (d.workingDays ?? 0), 0),
-    [delayLogs],
-  )
-  const totalDelayWeeks = Math.round((totalDelayDays / 5) * 10) / 10
-
   const handoverWeeks = useMemo(
     () => weeksUntilHandover(revisedHandoverIso ?? project.handover_date),
     [revisedHandoverIso, project.handover_date],
@@ -5130,6 +5129,20 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       : handoverWeeks.overdue
         ? '0 (overdue)'
         : String(handoverWeeks.weeks)
+
+  useEffect(() => {
+    console.log('[handover-debug]', {
+      originalHandover: project.handover_date ?? null,
+      totalDelayDays,
+      totalVariationDays,
+      calculatedDate: revisedHandoverIso,
+    })
+  }, [
+    project.handover_date,
+    totalDelayDays,
+    totalVariationDays,
+    revisedHandoverIso,
+  ])
 
   const revisedContractWithVars =
     (project.contract_value != null ? num(project.contract_value) : 0) + variationTotal
