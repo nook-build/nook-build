@@ -1268,16 +1268,32 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                 <td>
                                   <input
                                     type="number"
+                                    min={0}
+                                    max={100}
                                     defaultValue={0}
                                     style={{
                                       width: 55,
                                       background: '#1E2535',
                                       border: '1px solid #F4A623',
                                       borderRadius: 4,
-                                      padding: '4px',
+                                      padding: '4px 6px',
                                       color: '#F4A623',
+                                      fontFamily: 'DM Mono, monospace',
                                       fontSize: 12,
+                                      textAlign: 'center',
                                     }}
+                                    onBlur={(e) =>
+                                      void updateRowPct(
+                                        r,
+                                        Math.min(
+                                          100,
+                                          Math.max(
+                                            0,
+                                            parseFloat(e.target.value) || 0,
+                                          ),
+                                        ),
+                                      )
+                                    }
                                   />
                                 </td>
                                 <td className="td-mono td-mu">
