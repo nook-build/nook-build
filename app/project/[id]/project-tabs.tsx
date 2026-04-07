@@ -5131,16 +5131,18 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         : String(handoverWeeks.weeks)
 
   useEffect(() => {
-    console.log('[handover-debug]', {
-      originalHandover: project.handover_date ?? null,
-      totalDelayDays,
-      totalVariationDays,
-      calculatedDate: revisedHandoverIso,
-    })
+    const delayDays = totalDelayDays
+    const variationDays = totalVariationDays
+    console.log('delay days from DB:', delayDays)
+    console.log('variation prog days:', variationDays)
+    console.log('total shift:', totalHandoverWorkingShift)
+    console.log('original handover:', project.handover_date)
+    console.log('revised handover:', revisedHandoverIso)
   }, [
     project.handover_date,
     totalDelayDays,
     totalVariationDays,
+    totalHandoverWorkingShift,
     revisedHandoverIso,
   ])
 
