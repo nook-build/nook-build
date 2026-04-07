@@ -485,6 +485,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   >([])
   const [voPctThisWeek, setVoPctThisWeek] = useState<Record<string, number>>({})
   const [pctDraft, setPctDraft] = useState<Record<string, string>>({})
+  const [focusedPctRowId, setFocusedPctRowId] = useState<string | null>(null)
 
   useEffect(() => {
     try {
@@ -1274,7 +1275,13 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     min={0}
                                     max={100}
                                     step={0.5}
-                                    style={{ pointerEvents: 'auto' }}
+                                    style={{
+                                      pointerEvents: 'auto',
+                                      background:
+                                        focusedPctRowId === r.id
+                                          ? 'rgba(255, 61, 87, 0.28)'
+                                          : undefined,
+                                    }}
                                     value={
                                       pctDraft[r.id] !== undefined
                                         ? pctDraft[r.id]
@@ -1286,6 +1293,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     onClick={(e) => e.stopPropagation()}
                                     onMouseDown={(e) => e.stopPropagation()}
                                     onFocus={() => {
+                                      setFocusedPctRowId(r.id)
                                       setPctDraft((d) => ({
                                         ...d,
                                         [r.id]:
@@ -1293,6 +1301,9 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                       }))
                                     }}
                                     onBlur={(e) => {
+                                      setFocusedPctRowId((prev) =>
+                                        prev === r.id ? null : prev,
+                                      )
                                       const raw = e.target.value.trim()
                                       setPctDraft((d) => {
                                         const next = { ...d }
