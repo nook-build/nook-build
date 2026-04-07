@@ -898,14 +898,13 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   const totalBalanceLeft =
     filteredRows.reduce((s, r) => {
       const cv = num(r.contract_value)
-      const cum = pctCumulative(r)
       const claimed =
-        cum != null ? (cv * cum) / 100 : prevDrawnForTrade(
-            rows,
-            r.description ?? '',
-            activePeriod ?? '',
-            chronWeeks,
-          ) + num(r.amount_due)
+        prevDrawnForTrade(
+          rows,
+          r.description ?? '',
+          activePeriod ?? '',
+          chronWeeks,
+        ) + num(r.amount_due)
       return s + Math.max(0, cv - claimed)
     }, 0) +
     approvedValuationVOs.reduce((s, v) => {
@@ -916,15 +915,13 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
 
   const totalClaimedDisplay =
     filteredRows.reduce((s, r) => {
-      const cv = num(r.contract_value)
-      const cum = pctCumulative(r)
       const claimed =
-        cum != null ? (cv * cum) / 100 : prevDrawnForTrade(
-            rows,
-            r.description ?? '',
-            activePeriod ?? '',
-            chronWeeks,
-          ) + num(r.amount_due)
+        prevDrawnForTrade(
+          rows,
+          r.description ?? '',
+          activePeriod ?? '',
+          chronWeeks,
+        ) + num(r.amount_due)
       return s + claimed
     }, 0) +
     approvedValuationVOs.reduce((s, v) => {
@@ -1247,10 +1244,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                             const pctW = pctThisWeek(r)
                             const amt = num(r.amount_due)
                             const cum = pctCumulative(r)
-                            const claimed =
-                              cum != null
-                                ? (cv * cum) / 100
-                                : prev + amt
+                            const claimed = prev + amt
                             const bal = Math.max(0, cv - claimed)
                             const claimedPct = cv > 0 ? (claimed / cv) * 100 : 0
                             const leftPct = 100 - claimedPct
@@ -1290,7 +1284,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     type="number"
                                     min={0}
                                     max={100}
-                                    defaultValue={0}
+                                    step={0.5}
                                     style={{
                                       width: 55,
                                       background: '#1E2535',
@@ -1302,18 +1296,54 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                       fontSize: 12,
                                       textAlign: 'center',
                                     }}
-                                    onBlur={(e) =>
+                                    value={
+                                      pctDraft[r.id] !== undefined
+                                        ? pctDraft[r.id]
+                                        : String(pctW ?? 0)
+                                    }
+                                    onFocus={() => {
+                                      setPctDraft((d) => ({
+                                        ...d,
+                                        [r.id]: String(pctW ?? 0),
+                                      }))
+                                    }}
+                                    onChange={(e) => {
+                                      const raw = e.target.value
+                                      setPctDraft((d) => ({ ...d, [r.id]: raw }))
+                                      const trimmed = raw.trim()
+                                      if (
+                                        trimmed === '' ||
+                                        trimmed === '.' ||
+                                        trimmed === '-'
+                                      ) {
+                                        patchRowPctLocal(r, 0)
+                                        return
+                                      }
+                                      const parsed = parseFloat(trimmed)
+                                      if (Number.isNaN(parsed)) return
+                                      patchRowPctLocal(
+                                        r,
+                                        Math.min(100, Math.max(0, parsed)),
+                                      )
+                                    }}
+                                    onBlur={(e) => {
+                                      const raw = e.target.value.trim()
+                                      setPctDraft((d) => {
+                                        const next = { ...d }
+                                        delete next[r.id]
+                                        return next
+                                      })
+                                      const parsed =
+                                        raw === '' || raw === '.' || raw === '-'
+                                          ? 0
+                                          : parseFloat(raw)
                                       void updateRowPct(
                                         r,
-                                        Math.min(
-                                          100,
-                                          Math.max(
-                                            0,
-                                            parseFloat(e.target.value) || 0,
-                                          ),
-                                        ),
+                                        Number.isNaN(parsed)
+                                          ? 0
+                                          : Math.min(100, Math.max(0, parsed)),
                                       )
-                                    }
+                                    }}
                                   />
                                 </td>
                                 <td className="td-mono td-mu">
