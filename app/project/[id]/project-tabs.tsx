@@ -1265,76 +1265,18 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     {active ? 'Active' : 'Pending'}
                                   </span>
                                 </td>
-                                <td
-                                  onClick={(e) => e.stopPropagation()}
-                                  onMouseDown={(e) => e.stopPropagation()}
-                                >
+                                <td>
                                   <input
                                     type="number"
-                                    min={0}
-                                    max={100}
-                                    step={0.5}
+                                    defaultValue={0}
                                     style={{
-                                      width: 52,
-                                      fontSize: 11,
-                                      padding: '3px 5px',
-                                      border: `1px solid ${pctRow > 0 ? 'rgba(244, 166, 35, 0.4)' : 'var(--bd)'}`,
+                                      width: 55,
+                                      background: '#1E2535',
+                                      border: '1px solid #F4A623',
                                       borderRadius: 4,
-                                      background: 'var(--s2)',
-                                      color: pctRow > 0 ? 'var(--ac)' : 'var(--tx)',
-                                      textAlign: 'center',
-                                    }}
-                                    value={
-                                      pctDraft[r.id] !== undefined
-                                        ? pctDraft[r.id]
-                                        : String(pctRow)
-                                    }
-                                    placeholder="0"
-                                    onClick={(e) => e.stopPropagation()}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                    onFocus={() => {
-                                      setPctDraft((d) => ({
-                                        ...d,
-                                        [r.id]: String(pctRow),
-                                      }))
-                                    }}
-                                    onBlur={(e) => {
-                                      const raw = e.target.value.trim()
-                                      setPctDraft((d) => {
-                                        const next = { ...d }
-                                        delete next[r.id]
-                                        return next
-                                      })
-                                      const parsed =
-                                        raw === '' ||
-                                        raw === '.' ||
-                                        raw === '-'
-                                          ? 0
-                                          : parseFloat(raw)
-                                      if (Number.isNaN(parsed)) {
-                                        void updateRowPct(r, 0)
-                                      } else {
-                                        void updateRowPct(
-                                          r,
-                                          Math.min(100, Math.max(0, parsed)),
-                                        )
-                                      }
-                                    }}
-                                    onChange={(e) => {
-                                      const raw = e.target.value
-                                      setPctDraft((d) => ({ ...d, [r.id]: raw }))
-                                      const t = raw.trim()
-                                      if (
-                                        t === '' ||
-                                        t === '.' ||
-                                        t === '-'
-                                      ) {
-                                        patchRowPctLocal(r, 0)
-                                        return
-                                      }
-                                      const n = parseFloat(raw)
-                                      if (Number.isNaN(n)) return
-                                      patchRowPctLocal(r, Math.min(100, Math.max(0, n)))
+                                      padding: '4px',
+                                      color: '#F4A623',
+                                      fontSize: 12,
                                     }}
                                   />
                                 </td>
