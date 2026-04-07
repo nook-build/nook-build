@@ -485,6 +485,12 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   >([])
   const [voPctThisWeek, setVoPctThisWeek] = useState<Record<string, number>>({})
   const [pctDraft, setPctDraft] = useState<Record<string, string>>({})
+  const pctDraftRef = useRef<Record<string, string>>({})
+  const loadedProjectIdRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    pctDraftRef.current = pctDraft
+  }, [pctDraft])
 
   useEffect(() => {
     try {
@@ -502,6 +508,8 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   }, [lockStorageKey])
 
   useEffect(() => {
+    if (loadedProjectIdRef.current === project.id) return
+    loadedProjectIdRef.current = project.id
     let cancelled = false
     async function load() {
       setLoading(true)
@@ -517,7 +525,19 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
         setLoadError(error.message)
         setRows([])
       } else {
-        setRows(normalizeValuationRows(data as Record<string, unknown>[]))
+        const nextRows = normalizeValuationRows(data as Record<string, unknown>[])
+        const draft = pctDraftRef.current
+        setRows(
+          nextRows.map((row) => {
+            const raw = draft[row.id]
+            if (raw == null) return row
+            const n = parseFloat(raw)
+            if (Number.isNaN(n)) return row
+            const cv = num(row.contract_value)
+            const { pctClamped, amt } = rowPctAmounts(cv, n)
+            return { ...row, percent_complete: pctClamped, amount_due: amt }
+          }),
+        )
       }
 
       const { data: cData, error: cErr } = await supabase
@@ -1270,7 +1290,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     type="number"
                                     min={0}
                                     max={100}
-                                    defaultValue={0}
+                                    step={0.5}
                                     style={{
                                       width: 55,
                                       background: '#1E2535',
@@ -1282,18 +1302,49 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                       fontSize: 12,
                                       textAlign: 'center',
                                     }}
-                                    onBlur={(e) =>
-                                      void updateRowPct(
-                                        r,
-                                        Math.min(
-                                          100,
-                                          Math.max(
-                                            0,
-                                            parseFloat(e.target.value) || 0,
-                                          ),
-                                        ),
-                                      )
+                                    value={
+                                      pctDraft[r.id] !== undefined
+                                        ? pctDraft[r.id]
+                                        : String(pctRow)
                                     }
+                                    onFocus={() => {
+                                      setPctDraft((d) => ({
+                                        ...d,
+                                        [r.id]: String(pctRow),
+                                      }))
+                                    }}
+                                    onBlur={(e) => {
+                                      const raw = e.target.value.trim()
+                                      setPctDraft((d) => {
+                                        const next = { ...d }
+                                        delete next[r.id]
+                                        return next
+                                      })
+                                      const parsed =
+                                        raw === '' || raw === '.' || raw === '-'
+                                          ? 0
+                                          : parseFloat(raw)
+                                      if (Number.isNaN(parsed)) {
+                                        void updateRowPct(r, 0)
+                                      } else {
+                                        void updateRowPct(
+                                          r,
+                                          Math.min(100, Math.max(0, parsed)),
+                                        )
+                                      }
+                                    }}
+                                    onChange={(e) => {
+                                      const raw = e.target.value
+                                      setPctDraft((d) => ({ ...d, [r.id]: raw }))
+                                      const t = raw.trim()
+                                      if (t === '' || t === '.' || t === '-') {
+                                        patchRowPctLocal(r, 0)
+                                        return
+                                      }
+                                      const n = parseFloat(raw)
+                                      if (Number.isNaN(n)) return
+                                      patchRowPctLocal(r, Math.min(100, Math.max(0, n)))
+                                    }}
                                   />
                                 </td>
                                 <td className="td-mono td-mu">
@@ -3367,15 +3418,8 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
       setProgrammeImpactLoading(false)
     }
     void loadProgrammeImpact()
-    const interval = setInterval(() => void loadProgrammeImpact(), 30_000)
-    function onVis() {
-      if (document.visibilityState === 'visible') void loadProgrammeImpact()
-    }
-    document.addEventListener('visibilitychange', onVis)
     return () => {
       cancelled = true
-      clearInterval(interval)
-      document.removeEventListener('visibilitychange', onVis)
     }
   }, [project.id])
 
