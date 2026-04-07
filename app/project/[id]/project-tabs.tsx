@@ -1274,7 +1274,6 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     min={0}
                                     max={100}
                                     step={0.5}
-                                    disabled={locked}
                                     value={
                                       pctDraft[r.id] !== undefined
                                         ? pctDraft[r.id]
@@ -3390,9 +3389,10 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
       let vSum = 0
       let vCount = 0
       for (const row of varRows) {
-        if (String(row.status ?? '').toLowerCase() !== 'approved') continue
         vSum += Math.max(0, Number(row.prog_days ?? 0))
-        vCount += 1
+        if (String(row.status ?? '').toLowerCase() === 'approved') {
+          vCount += 1
+        }
       }
       setProgrammeVariationDays(vSum)
       setProgrammeApprovedVariationsCount(vCount)
@@ -5043,16 +5043,16 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const totalVariationDays = useMemo(
     () =>
       variationRows
-        .filter((v) => v.status === 'approved')
         .reduce((s, v) => s + Math.max(0, Number(v.programmeDays ?? 0)), 0),
     [variationRows],
   )
+  const totalHandoverWorkingShift = totalDelayDays + totalVariationDays
   const totalDelayWeeks = Math.round((totalDelayDays / 5) * 10) / 10
 
   const revisedHandoverIso = useMemo(() => {
     if (!project.handover_date) return null
-    return addWorkingDaysIso(project.handover_date, totalDelayDays)
-  }, [project.handover_date, totalDelayDays])
+    return addWorkingDaysIso(project.handover_date, totalHandoverWorkingShift)
+  }, [project.handover_date, totalHandoverWorkingShift])
 
   const effectiveHandoverIso =
     revisedHandoverIso ?? project.handover_date ?? null
