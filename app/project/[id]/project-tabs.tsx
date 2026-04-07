@@ -1270,11 +1270,20 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                   onMouseDown={(e) => e.stopPropagation()}
                                 >
                                   <input
-                                    className={`pi ${(pctW ?? 0) > 0 ? 'hv' : ''}`}
                                     type="number"
                                     min={0}
                                     max={100}
                                     step={0.5}
+                                    style={{
+                                      width: 52,
+                                      fontSize: 11,
+                                      padding: '3px 5px',
+                                      border: `1px solid ${pctRow > 0 ? 'rgba(244, 166, 35, 0.4)' : 'var(--bd)'}`,
+                                      borderRadius: 4,
+                                      background: 'var(--s2)',
+                                      color: pctRow > 0 ? 'var(--ac)' : 'var(--tx)',
+                                      textAlign: 'center',
+                                    }}
                                     value={
                                       pctDraft[r.id] !== undefined
                                         ? pctDraft[r.id]
@@ -1421,11 +1430,20 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     onMouseDown={(e) => e.stopPropagation()}
                                   >
                                     <input
-                                      className={`pi ${pct > 0 ? 'hv' : ''}`}
                                       type="number"
                                       min={0}
                                       max={100}
                                       step={0.5}
+                                      style={{
+                                        width: 52,
+                                        fontSize: 11,
+                                        padding: '3px 5px',
+                                        border: `1px solid ${pct > 0 ? 'rgba(244, 166, 35, 0.4)' : 'var(--bd)'}`,
+                                        borderRadius: 4,
+                                        background: 'var(--s2)',
+                                        color: pct > 0 ? 'var(--ac)' : 'var(--tx)',
+                                        textAlign: 'center',
+                                      }}
                                       value={
                                         pctDraft[voKey] !== undefined
                                           ? pctDraft[voKey]
@@ -2179,24 +2197,6 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
         }
         .c-rd {
           color: var(--rd);
-        }
-        .pi {
-          width: 52px;
-          font-size: 11px;
-          padding: 3px 5px;
-          border: 1px solid var(--bd);
-          border-radius: 4px;
-          background: var(--s2);
-          color: var(--tx);
-          text-align: center;
-        }
-        .pi:focus {
-          border-color: var(--ac);
-          outline: none;
-        }
-        .pi.hv {
-          border-color: rgba(244, 166, 35, 0.4);
-          color: var(--ac);
         }
         .badge {
           display: inline-flex;
