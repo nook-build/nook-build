@@ -285,4 +285,4 @@ function StatusPill({ status }: { status: string | null }) {
       {status ?? '—'}
     </span>
   )
-}grep -n "className=\"pi\"" app/project/\[id\]/project-tabs.tsx
+}
