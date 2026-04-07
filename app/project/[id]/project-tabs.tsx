@@ -58,6 +58,25 @@ export type PortalSection =
   | 'handover-pack'
   | 'weekly-reports'
 
+const ALL_PORTAL_SECTIONS: PortalSection[] = [
+  'command-centre',
+  'programme',
+  'documents',
+  'site-photos',
+  'messages',
+  'email-trail',
+  'building-control',
+  'invoices',
+  'valuation',
+  'cis',
+  'task-board',
+  'team-hub',
+  'snag-list',
+  'client-signoff',
+  'handover-pack',
+  'weekly-reports',
+]
+
 function renderPortalSection(
   section: PortalSection,
   project: ProjectDetail,
@@ -4141,22 +4160,10 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     )
   }
 
-  let content: ReactNode
-  switch (activeTab) {
-    case 'overview':
-      content = overviewContent
-      break
-    case 'programme':
-      content = <ProgrammeTab project={project} />
-      break
-    case 'valuation':
-      content = <ValuationTab project={project} />
-      break
-    case 'cumulative':
-      content = <CommandCentreCumulativeTab />
-      break
-    case 'delays':
-      content = (
+  const programmeTabPanel = <ProgrammeTab project={project} />
+  const valuationTabPanel = <ValuationTab project={project} />
+  const cumulativeTabPanel = <CommandCentreCumulativeTab />
+  const delaysTabPanel = (
         <div style={{ display: 'grid', gridTemplateColumns: '7fr 3fr', gap: 14 }}>
           <div>
             <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, overflow: 'hidden', marginBottom: 14 }}>
@@ -4278,9 +4285,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           </div>
         </div>
       )
-      break
-    case 'variations':
-      content = (
+  const variationsTabPanel = (
         <div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 10, marginBottom: 14 }}>
             {[
@@ -4345,9 +4350,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           </div>
         </div>
       )
-      break
-    case 'on-track':
-      content = (
+  const onTrackTabPanel = (
         <div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 10, marginBottom: 14 }}>
             <div style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 12, padding: '12px 14px' }}><div style={{ fontFamily: 'DM Mono, monospace', fontSize: 9, color: '#64748B' }}>WEEK</div><div style={{ fontFamily: 'Bebas Neue, sans-serif', fontSize: 22, color: '#F4A623' }}>{currentWeekDisplay.replace('Week ', 'Wk ')}</div></div>
@@ -4388,9 +4391,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           </div>
         </div>
       )
-      break
-    case 'building-control':
-      content = (
+  const buildingControlTabPanel = (
         <div className="space-y-4">
           <div className="stats" style={{ gridTemplateColumns: 'repeat(5,1fr)', marginBottom: 16 }}>
             <div className="sc g"><div className="sl">Passed</div><div className="sv" style={{ color: 'var(--gr)' }}>{bcPass}</div><div className="ss">inspections</div></div>
@@ -4472,10 +4473,6 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           </div>
         </div>
       )
-      break
-    default:
-      content = overviewContent
-  }
 
   return (
     <div className="space-y-4">
@@ -4527,7 +4524,30 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
         </div>
       </div>
 
-      {content}
+      <div style={{ display: activeTab === 'overview' ? 'block' : 'none' }}>
+        {overviewContent}
+      </div>
+      <div style={{ display: activeTab === 'programme' ? 'block' : 'none' }}>
+        {programmeTabPanel}
+      </div>
+      <div style={{ display: activeTab === 'valuation' ? 'block' : 'none' }}>
+        {valuationTabPanel}
+      </div>
+      <div style={{ display: activeTab === 'cumulative' ? 'block' : 'none' }}>
+        {cumulativeTabPanel}
+      </div>
+      <div style={{ display: activeTab === 'delays' ? 'block' : 'none' }}>
+        {delaysTabPanel}
+      </div>
+      <div style={{ display: activeTab === 'variations' ? 'block' : 'none' }}>
+        {variationsTabPanel}
+      </div>
+      <div style={{ display: activeTab === 'on-track' ? 'block' : 'none' }}>
+        {onTrackTabPanel}
+      </div>
+      <div style={{ display: activeTab === 'building-control' ? 'block' : 'none' }}>
+        {buildingControlTabPanel}
+      </div>
       <style jsx>{`
         .panel {
           background: #0f1219;
@@ -4867,7 +4887,15 @@ export function ProjectTabs({
 }) {
   return (
     <div role="main" aria-live="polite">
-      {renderPortalSection(activeSection, project)}
+      {ALL_PORTAL_SECTIONS.map((section) => (
+        <div
+          key={section}
+          style={{ display: activeSection === section ? 'block' : 'none' }}
+          aria-hidden={activeSection !== section}
+        >
+          {renderPortalSection(section, project)}
+        </div>
+      ))}
     </div>
   )
 }
