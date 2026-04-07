@@ -4601,7 +4601,7 @@ function delayRecordToWorkingDays(row: {
 }): number {
   const duration = Math.max(0, Number(row.duration ?? 0))
   const unit = String(row.unit ?? 'days').toLowerCase()
-  if (unit === 'weeks') return Math.round(duration * 5)
+  if (unit === 'weeks') return duration * 5
   return duration
 }
 
