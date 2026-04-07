@@ -465,6 +465,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   const [savingByRowId, setSavingByRowId] = useState<Record<string, boolean>>({})
   const [periodOverride, setPeriodOverride] = useState<string | null>(null)
   const [pctDraft, setPctDraft] = useState<Record<string, string>>({})
+  const [amtDraft, setAmtDraft] = useState<Record<string, number>>({})
   const [lockedIds, setLockedIds] = useState<Set<string>>(new Set())
   const lockStorageKey = `nook-valuation-locks:${project.id}`
 
@@ -588,8 +589,12 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   }, [activeRows, phaseForDescription, phaseOrder])
 
   const weekCertTotal = useMemo(
-    () => activeRows.reduce((s, r) => s + num(r.amount_due), 0),
-    [activeRows],
+    () =>
+      activeRows.reduce(
+        (s, r) => s + (amtDraft[r.id] ?? (num(r.amount_due) > 0 ? num(r.amount_due) : 0)),
+        0,
+      ),
+    [activeRows, amtDraft],
   )
 
   const paidTotal = useMemo(
@@ -777,7 +782,8 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                         ? prevDrawnForTrade(rows, r.description ?? '', activePeriod, chronWeeks)
                         : 0
                       const thisWk = num(r.amount_due)
-                      const claimed = prev + thisWk
+                      const thisWkDisplay = amtDraft[r.id] ?? (thisWk > 0 ? thisWk : null)
+                      const claimed = prev + (thisWkDisplay ?? 0)
                       const bal = Math.max(0, cv - claimed)
                       const locked = lockedIds.has(r.id)
                       const pctValue =
@@ -803,18 +809,36 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                               value={pctValue}
                               onChange={(e) => {
                                 const v = e.target.value
+                                const pct = Math.min(
+                                  100,
+                                  Math.max(0, parseFloat(v.trim()) || 0),
+                                )
                                 setPctDraft((d) => ({ ...d, [r.id]: v }))
+                                setAmtDraft((d) => ({
+                                  ...d,
+                                  [r.id]: Math.round(((pct / 100) * cv) * 100) / 100,
+                                }))
                                 patchRowPctLocal(r.id, v)
                               }}
                               onBlur={(e) => {
                                 const v = e.target.value
+                                const pct = Math.min(
+                                  100,
+                                  Math.max(0, parseFloat(v.trim()) || 0),
+                                )
                                 setPctDraft((d) => ({ ...d, [r.id]: v }))
+                                setAmtDraft((d) => ({
+                                  ...d,
+                                  [r.id]: Math.round(((pct / 100) * cv) * 100) / 100,
+                                }))
                                 void saveRow(r.id, v)
                               }}
                               className="w-[72px] rounded border border-[#F4A623] bg-[#1E2535] px-2 py-1 text-center text-xs text-[#F4A623]"
                             />
                           </td>
-                          <td className="px-3 py-2">{formatMoneyGBP(thisWk)}</td>
+                          <td className="px-3 py-2">
+                            {thisWkDisplay != null ? formatMoneyGBP(thisWkDisplay) : '—'}
+                          </td>
                           <td className="px-3 py-2">{formatMoneyGBP(claimed)}</td>
                           <td className="px-3 py-2">{formatMoneyGBP(bal)}</td>
                           <td className="px-3 py-2">
