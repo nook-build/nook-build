@@ -795,7 +795,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                       const prev = activePeriod
                         ? prevDrawnForTrade(rows, r.description ?? '', activePeriod, chronWeeks)
                         : 0
-                      const thisWk = num(r.amount_due)
+                      const thisWk = num(r.amount_due); console.log("ROW",r.description,"amount_due",r.amount_due,"pct",r.percent_complete)
                       const claimed = prev + thisWk
                       const bal = Math.max(0, cv - claimed)
                       const locked = lockedIds.has(r.id)
