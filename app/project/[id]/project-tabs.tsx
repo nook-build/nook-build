@@ -11,7 +11,6 @@ import {
   type ReactNode,
 } from 'react'
 import { formatMoneyGBP } from '@/lib/format'
-import { ValuationThisWeekPctModal } from './valuation-this-week-pct-modal'
 import { supabase } from '@/lib/supabase'
 import {
   addWorkingDaysIso,
@@ -125,9 +124,11 @@ type ValuationRecord = {
   week_label: string
   description: string | null
   contract_value: number | string | null
-  percent_complete: number | string | null
+  /** This week % (DB column `percentage`). */
+  percentage: number | string | null
   cumulative_percent: number | string | null
-  amount_due: number | string
+  /** This week £ (DB column `amount`). */
+  amount: number | string
   cumulative_total: number | string
   status: string
   line_order: number
@@ -355,7 +356,7 @@ function normalizeValuationRow(raw: Record<string, unknown>): ValuationRecord {
     week_label: weekLabel,
     description: desc,
     contract_value: (raw.contract_value ?? null) as number | string | null,
-    percent_complete: (raw.percent_complete ?? raw.percentage ?? null) as
+    percentage: (raw.percentage ?? raw.percent_complete ?? null) as
       | number
       | string
       | null,
@@ -363,8 +364,8 @@ function normalizeValuationRow(raw: Record<string, unknown>): ValuationRecord {
       | number
       | string
       | null,
-    amount_due: num(
-      (raw.amount_due ?? raw.amount) as number | string | null | undefined,
+    amount: num(
+      (raw.amount ?? raw.amount_due) as number | string | null | undefined,
     ),
     cumulative_total: num(
       raw.cumulative_total as number | string | null | undefined,
@@ -435,7 +436,7 @@ function prevDrawnForTrade(
     for (const r of rows) {
       if (r.week_label !== wl) continue
       if ((r.description?.trim() ?? '') !== d) continue
-      sum += num(r.amount_due)
+      sum += num(r.amount)
     }
   }
   return sum
@@ -460,13 +461,8 @@ function weightedValuePercent(
 }
 
 function pctThisWeek(r: ValuationRecord) {
-  const p = r.percent_complete
+  const p = r.percentage
   return p == null ? null : num(p)
-}
-
-function formatPctButtonLabel(p: number | null) {
-  const v = p ?? 0
-  return Number.isInteger(v) ? `${v}%` : `${v.toFixed(1)}%`
 }
 
 function pctCumulative(r: ValuationRecord) {
@@ -489,7 +485,8 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   const [periodOverride, setPeriodOverride] = useState<string | null>(null)
   const [lockedIds, setLockedIds] = useState<Set<string>>(new Set())
   const lockStorageKey = `nook-valuation-locks:${project.id}`
-  const [pctModalRowId, setPctModalRowId] = useState<string | null>(null)
+  const [draftAmounts, setDraftAmounts] = useState<Record<string, number>>({})
+  const [pctInputs, setPctInputs] = useState<Record<string, string>>({})
 
   useEffect(() => {
     try {
@@ -575,6 +572,20 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       .sort((a, b) => a.line_order - b.line_order)
   }, [rows, activePeriod])
 
+  useEffect(() => {
+    if (loading || !activePeriod) return
+    const nextPct: Record<string, string> = {}
+    for (const r of rows) {
+      if (r.week_label !== activePeriod) continue
+      const p = pctThisWeek(r)
+      nextPct[r.id] = p != null ? String(p) : '0'
+    }
+    setPctInputs(nextPct)
+    setDraftAmounts({})
+    // Omit `rows` from deps so saving one row does not reset other rows' drafts.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, activePeriod])
+
   const tradeToPhase = useMemo(() => {
     const m = new Map<string, string>()
     for (const p of programmeItems) m.set(p.trade_name.trim().toLowerCase(), p.phase)
@@ -610,8 +621,12 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   }, [activeRows, phaseForDescription, phaseOrder])
 
   const weekCertTotal = useMemo(
-    () => activeRows.reduce((s, r) => s + num(r.amount_due), 0),
-    [activeRows],
+    () =>
+      activeRows.reduce((s, r) => {
+        const d = draftAmounts[r.id]
+        return s + (d !== undefined ? d : num(r.amount))
+      }, 0),
+    [activeRows, draftAmounts],
   )
 
   const paidTotal = useMemo(
@@ -646,35 +661,54 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     }
   }
 
-  async function savePctFromModal(rowId: string, pct: number) {
-    if (lockedIds.has(rowId)) return
-    const row = rows.find((r) => r.id === rowId)
-    if (!row) return
-    const cv = num(row.contract_value)
+  function handlePctChange(r: ValuationRecord, raw: string) {
+    if (lockedIds.has(r.id)) return
+    setPctInputs((prev) => ({ ...prev, [r.id]: raw }))
+    const trimmed = raw.trim()
+    if (trimmed === '' || trimmed === '.' || trimmed === '-') {
+      setDraftAmounts((d) => ({ ...d, [r.id]: 0 }))
+      return
+    }
+    const parsed = parseFloat(trimmed)
+    if (Number.isNaN(parsed)) return
+    const pct = Math.min(100, Math.max(0, parsed))
+    const cv = num(r.contract_value)
+    const amt = Math.round(((pct / 100) * cv) * 100) / 100
+    setDraftAmounts((d) => ({ ...d, [r.id]: amt }))
+  }
+
+  async function savePctOnBlur(r: ValuationRecord, rawFromInput?: string) {
+    if (lockedIds.has(r.id)) return
+    const raw = (rawFromInput ?? pctInputs[r.id] ?? '0').trim()
+    const parsed =
+      raw === '' || raw === '.' || raw === '-' ? 0 : parseFloat(raw)
+    const pct = Number.isNaN(parsed)
+      ? 0
+      : Math.min(100, Math.max(0, parsed))
+    const cv = num(r.contract_value)
     const amt = Math.round(((pct / 100) * cv) * 100) / 100
 
-    setSavingByRowId((s) => ({ ...s, [rowId]: true }))
+    setSavingByRowId((s) => ({ ...s, [r.id]: true }))
     setRows((prev) =>
-      prev.map((r) =>
-        r.id === rowId ? { ...r, percentage: pct, amount: amt } : r,
+      prev.map((row) =>
+        row.id === r.id ? { ...row, percentage: pct, amount: amt } : row,
       ),
     )
-
     const { error: saveErr } = await supabase
       .from('valuations')
-      .update({ percentage: pct, amount: amt }).then(r => console.log("UPDATE RESULT", JSON.stringify(r)))
-      .eq('id', rowId)
-    setSavingByRowId((s) => ({ ...s, [rowId]: false }))
+      .update({ percentage: pct, amount: amt })
+      .eq('id', r.id)
+    setSavingByRowId((s) => ({ ...s, [r.id]: false }))
     if (saveErr) {
       setError(saveErr.message)
       return
     }
-    setPctModalRowId(null)
+    setDraftAmounts((d) => {
+      const next = { ...d }
+      delete next[r.id]
+      return next
+    })
   }
-
-  const pctModalRow = pctModalRowId
-    ? rows.find((r) => r.id === pctModalRowId)
-    : null
 
   async function toggleLock(row: ValuationRecord) {
     const next = new Set(lockedIds)
@@ -690,13 +724,13 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       setRows((prevRows) =>
         prevRows.map((r) =>
           r.id === row.id
-            ? { ...r, status: 'paid', percent_complete: pct, amount_due: remaining }
+            ? { ...r, status: 'paid', percentage: pct, amount: remaining }
             : r,
         ),
       )
       const { error: lockErr } = await supabase
         .from('valuations')
-        .update({ status: 'paid', percent_complete: pct, amount_due: remaining })
+        .update({ status: 'paid', percentage: pct, amount: remaining })
         .eq('id', row.id)
       if (lockErr) setError(lockErr.message)
     } else {
@@ -795,8 +829,11 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                       const prev = activePeriod
                         ? prevDrawnForTrade(rows, r.description ?? '', activePeriod, chronWeeks)
                         : 0
-                      const thisWk = num(r.amount_due); console.log("ROW",r.description,"amount_due",r.amount_due,"pct",r.percent_complete)
-                      const claimed = prev + thisWk
+                      const thisWkPounds =
+                        draftAmounts[r.id] !== undefined
+                          ? draftAmounts[r.id]
+                          : num(r.amount)
+                      const claimed = prev + thisWkPounds
                       const bal = Math.max(0, cv - claimed)
                       const locked = lockedIds.has(r.id)
                       return (
@@ -809,19 +846,24 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                             {(r.status ?? '').toLowerCase() === 'paid' ? 'Complete' : 'Active'}
                           </td>
                           <td className="px-3 py-2">
-                            <button
-                              type="button"
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              step={0.5}
                               disabled={locked}
-                              onClick={() => {
-                                if (!locked) setPctModalRowId(r.id)
-                              }}
-                              className="min-w-[56px] rounded border border-[#F4A623] bg-[#1E2535] px-2 py-1 text-center text-xs text-[#F4A623] hover:bg-[#1a2233] disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              {formatPctButtonLabel(pctThisWeek(r))}
-                            </button>
+                              value={pctInputs[r.id] ?? ''}
+                              onChange={(e) => handlePctChange(r, e.target.value)}
+                              onBlur={(e) => void savePctOnBlur(r, e.target.value)}
+                              className="w-[72px] rounded border border-[#F4A623] bg-[#1E2535] px-2 py-1 text-center text-xs text-[#F4A623] disabled:cursor-not-allowed disabled:opacity-50"
+                            />
                           </td>
                           <td className="px-3 py-2">
-                            {thisWk > 0 ? formatMoneyGBP(thisWk) : '—'}
+                            {draftAmounts[r.id] !== undefined
+                              ? formatMoneyGBP(draftAmounts[r.id])
+                              : num(r.amount) > 0
+                                ? formatMoneyGBP(num(r.amount))
+                                : '—'}
                           </td>
                           <td className="px-3 py-2">{formatMoneyGBP(claimed)}</td>
                           <td className="px-3 py-2">{formatMoneyGBP(bal)}</td>
@@ -881,22 +923,6 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
           </div>
         )}
       </div>
-
-      <ValuationThisWeekPctModal
-        open={pctModalRow != null}
-        onClose={() => setPctModalRowId(null)}
-        tradeName={pctModalRow?.description?.trim() || '—'}
-        contractValueNum={pctModalRow ? num(pctModalRow.contract_value) : 0}
-        initialPct={
-          pctModalRow ? num(pctModalRow.percent_complete ?? 0) : 0
-        }
-        saving={
-          pctModalRow ? Boolean(savingByRowId[pctModalRow.id]) : false
-        }
-        onSave={(pct) => {
-          if (pctModalRowId) void savePctFromModal(pctModalRowId, pct)
-        }}
-      />
 
       <div className="rounded-lg border border-[#1E2535] bg-[#0F1219] p-4">
         <div className="mb-2 text-sm font-semibold text-[#F4A623]">Payment Tracker</div>
@@ -3523,7 +3549,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const totalItems = useMemo(() => {
     return new Set(rows.map((r) => (r.description ?? '').trim()).filter(Boolean)).size
   }, [rows])
-  const activeItems = latestRows.filter((r) => num(r.percent_complete) > 0).length
+  const activeItems = latestRows.filter((r) => num(r.percentage) > 0).length
   const remainingItems = Math.max(0, totalItems - lockedItems)
   const completionByLockPct = totalItems > 0 ? (lockedItems / totalItems) * 100 : 0
   const timelineDonePct =
@@ -3534,7 +3560,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   const depositAmount = weekOneLabel
     ? rows
         .filter((r) => r.week_label === weekOneLabel)
-        .reduce((s, r) => s + num(r.amount_due), 0)
+        .reduce((s, r) => s + num(r.amount), 0)
     : 0
 
   const handoverWeeks = useMemo(
@@ -3783,7 +3809,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       const weekNum = idx + 1
       const weekPlanned = rows
         .filter((r) => r.week_label === wl)
-        .reduce((s, r) => s + num(r.amount_due), 0)
+        .reduce((s, r) => s + num(r.amount), 0)
       plannedCumul += weekPlanned
       const weekActual = certByWeekNumber.get(weekNum) ?? 0
       actualCumul += weekActual
