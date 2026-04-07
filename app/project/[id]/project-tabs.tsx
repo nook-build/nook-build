@@ -1290,7 +1290,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     type="number"
                                     min={0}
                                     max={100}
-                                    step={0.5}
+                                    defaultValue={0}
                                     style={{
                                       width: 55,
                                       background: '#1E2535',
@@ -1302,49 +1302,18 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                       fontSize: 12,
                                       textAlign: 'center',
                                     }}
-                                    value={
-                                      pctDraft[r.id] !== undefined
-                                        ? pctDraft[r.id]
-                                        : String(pctRow)
+                                    onBlur={(e) =>
+                                      void updateRowPct(
+                                        r,
+                                        Math.min(
+                                          100,
+                                          Math.max(
+                                            0,
+                                            parseFloat(e.target.value) || 0,
+                                          ),
+                                        ),
+                                      )
                                     }
-                                    onFocus={() => {
-                                      setPctDraft((d) => ({
-                                        ...d,
-                                        [r.id]: String(pctRow),
-                                      }))
-                                    }}
-                                    onBlur={(e) => {
-                                      const raw = e.target.value.trim()
-                                      setPctDraft((d) => {
-                                        const next = { ...d }
-                                        delete next[r.id]
-                                        return next
-                                      })
-                                      const parsed =
-                                        raw === '' || raw === '.' || raw === '-'
-                                          ? 0
-                                          : parseFloat(raw)
-                                      if (Number.isNaN(parsed)) {
-                                        void updateRowPct(r, 0)
-                                      } else {
-                                        void updateRowPct(
-                                          r,
-                                          Math.min(100, Math.max(0, parsed)),
-                                        )
-                                      }
-                                    }}
-                                    onChange={(e) => {
-                                      const raw = e.target.value
-                                      setPctDraft((d) => ({ ...d, [r.id]: raw }))
-                                      const t = raw.trim()
-                                      if (t === '' || t === '.' || t === '-') {
-                                        patchRowPctLocal(r, 0)
-                                        return
-                                      }
-                                      const n = parseFloat(raw)
-                                      if (Number.isNaN(n)) return
-                                      patchRowPctLocal(r, Math.min(100, Math.max(0, n)))
-                                    }}
                                   />
                                 </td>
                                 <td className="td-mono td-mu">
