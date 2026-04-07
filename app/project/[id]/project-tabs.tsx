@@ -4885,6 +4885,14 @@ export function ProjectTabs({
   project: ProjectDetail
   activeSection: PortalSection
 }) {
+  const sectionNodes = useMemo(() => {
+    const map = {} as Record<PortalSection, ReactNode>
+    for (const section of ALL_PORTAL_SECTIONS) {
+      map[section] = renderPortalSection(section, project)
+    }
+    return map
+  }, [project.id])
+
   return (
     <div role="main" aria-live="polite">
       {ALL_PORTAL_SECTIONS.map((section) => (
@@ -4893,7 +4901,7 @@ export function ProjectTabs({
           style={{ display: activeSection === section ? 'block' : 'none' }}
           aria-hidden={activeSection !== section}
         >
-          {renderPortalSection(section, project)}
+          {sectionNodes[section]}
         </div>
       ))}
     </div>
