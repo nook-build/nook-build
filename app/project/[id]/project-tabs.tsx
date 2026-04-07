@@ -1043,7 +1043,7 @@ function DocumentsTab({ project }: { project: ProjectDetail }) {
       setDocs((data ?? []) as DocumentRow[])
     }
     setLoading(false)
-  }, [project.id])
+  }, [project.id, activeSection])
 
   useEffect(() => {
     let cancelled = false
