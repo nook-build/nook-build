@@ -1328,11 +1328,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     }}
                                     onBlur={(e) => {
                                       const raw = e.target.value.trim()
-                                      setPctDraft((d) => {
-                                        const next = { ...d }
-                                        delete next[r.id]
-                                        return next
-                                      })
+                                      setPctDraft((d) => ({ ...d, [r.id]: String(Math.min(100, Math.max(0, parseFloat(e.target.value.trim()) || 0))) }))
                                       const parsed =
                                         raw === '' || raw === '.' || raw === '-'
                                           ? 0
