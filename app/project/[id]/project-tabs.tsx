@@ -464,6 +464,11 @@ function pctThisWeek(r: ValuationRecord) {
   return p == null ? null : num(p)
 }
 
+function formatPctButtonLabel(p: number | null) {
+  const v = p ?? 0
+  return Number.isInteger(v) ? `${v}%` : `${v.toFixed(1)}%`
+}
+
 function pctCumulative(r: ValuationRecord) {
   const p = r.cumulative_percent
   return p == null ? null : num(p)
@@ -812,7 +817,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                               }}
                               className="min-w-[56px] rounded border border-[#F4A623] bg-[#1E2535] px-2 py-1 text-center text-xs text-[#F4A623] hover:bg-[#1a2233] disabled:cursor-not-allowed disabled:opacity-50"
                             >
-                              {`${(pctThisWeek(r) ?? 0).toFixed(1)}%`}
+                              {formatPctButtonLabel(pctThisWeek(r))}
                             </button>
                           </td>
                           <td className="px-3 py-2">
