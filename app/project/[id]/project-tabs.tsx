@@ -457,167 +457,95 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   const [programmeItems, setProgrammeItems] = useState<
     { trade_name: string; phase: string }[]
   >([])
-  const [loading, setLoading] = useState(true)
-  const [loadError, setLoadError] = useState('')
-  const [formError, setFormError] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [periodOverride, setPeriodOverride] = useState<string | null>(null)
-  const [lockedIds, setLockedIds] = useState<Set<string>>(() => new Set())
-  const lockStorageKey = `nook-valuation-locks:${project.id}`
-
-  const [weekLabel, setWeekLabel] = useState('')
-  const [description, setDescription] = useState('')
-  const [contractValue, setContractValue] = useState(
-    () => (project.contract_value != null ? String(project.contract_value) : ''),
-  )
-  const [percentThisWeekInput, setPercentThisWeekInput] = useState('')
-  const [amountThisWeek, setAmountThisWeek] = useState('')
-  const [cumulativePercentInput, setCumulativePercentInput] = useState('')
-  const [lineStatus, setLineStatus] = useState<'paid' | 'unpaid'>('unpaid')
-  const [approvedValuationVOs, setApprovedValuationVOs] = useState<
-    {
-      id: string
-      voNumber: string
-      description: string
-      trade: string
-      value: number
-    }[]
+  const [approvedVariations, setApprovedVariations] = useState<
+    { id: string; voNumber: string; description: string; trade: string; value: number }[]
   >([])
-  const [voPctThisWeek, setVoPctThisWeek] = useState<Record<string, number>>({})
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [savingByRowId, setSavingByRowId] = useState<Record<string, boolean>>({})
+  const [periodOverride, setPeriodOverride] = useState<string | null>(null)
   const [pctDraft, setPctDraft] = useState<Record<string, string>>({})
-  const pctDraftRef = useRef<Record<string, string>>({})
-  const loadedProjectIdRef = useRef<string | null>(null)
-
-  useEffect(() => {
-    pctDraftRef.current = pctDraft
-  }, [pctDraft])
+  const [lockedIds, setLockedIds] = useState<Set<string>>(new Set())
+  const lockStorageKey = `nook-valuation-locks:${project.id}`
 
   useEffect(() => {
     try {
       const raw =
-        typeof window !== 'undefined'
-          ? localStorage.getItem(lockStorageKey)
-          : null
-      if (raw) {
-        const arr = JSON.parse(raw) as string[]
-        setLockedIds(new Set(arr))
-      }
+        typeof window !== 'undefined' ? localStorage.getItem(lockStorageKey) : null
+      if (raw) setLockedIds(new Set(JSON.parse(raw) as string[]))
     } catch {
       /* ignore */
     }
   }, [lockStorageKey])
 
   useEffect(() => {
-    if (loadedProjectIdRef.current === project.id) return
-    loadedProjectIdRef.current = project.id
     let cancelled = false
-    async function load() {
+    async function loadOnce() {
       setLoading(true)
-      setLoadError('')
-      const { data, error } = await supabase
-        .from('valuations')
-        .select('*')
-        .eq('project_id', project.id)
-        .order('line_order', { ascending: true })
-
+      setError('')
+      const [vRes, cRes, pRes, voRes] = await Promise.all([
+        supabase
+          .from('valuations')
+          .select('*')
+          .eq('project_id', project.id)
+          .order('line_order', { ascending: true }),
+        supabase
+          .from('certificates')
+          .select('*')
+          .eq('project_id', project.id)
+          .order('date_issued', { ascending: true }),
+        supabase
+          .from('programme_items')
+          .select('trade_name, phase')
+          .eq('project_id', project.id)
+          .order('start_week', { ascending: true }),
+        supabase
+          .from('variations')
+          .select('id, vo_number, description, trade, value, status')
+          .eq('project_id', project.id),
+      ])
       if (cancelled) return
-      if (error) {
-        setLoadError(error.message)
-        setRows([])
-      } else {
-        const nextRows = normalizeValuationRows(data as Record<string, unknown>[])
-        const draft = pctDraftRef.current
-        setRows(
-          nextRows.map((row) => {
-            const raw = draft[row.id]
-            if (raw == null) return row
-            const n = parseFloat(raw)
-            if (Number.isNaN(n)) return row
-            const cv = num(row.contract_value)
-            const { pctClamped, amt } = rowPctAmounts(cv, n)
-            return { ...row, percent_complete: pctClamped, amount_due: amt }
-          }),
-        )
-      }
 
-      const { data: cData, error: cErr } = await supabase
-        .from('certificates')
-        .select('*')
-        .eq('project_id', project.id)
-        .order('date_issued', { ascending: true })
+      const errs = [
+        vRes.error?.message,
+        cRes.error?.message,
+        pRes.error?.message,
+        voRes.error?.message,
+      ].filter(Boolean)
+      if (errs.length > 0) setError(errs.join(' · '))
 
-      if (!cancelled) {
-        if (cErr) {
-          setLoadError(cErr.message)
-          setCertificates([])
-        } else {
-          setCertificates((cData ?? []) as CertificateRecord[])
-        }
-      }
+      setRows(normalizeValuationRows((vRes.data ?? []) as Record<string, unknown>[]))
+      setCertificates((cRes.data ?? []) as CertificateRecord[])
+      setProgrammeItems((pRes.data ?? []) as { trade_name: string; phase: string }[])
 
-      const { data: pData } = await supabase
-        .from('programme_items')
-        .select('trade_name, phase')
-        .eq('project_id', project.id)
-        .order('start_week', { ascending: true })
-      if (!cancelled && pData) {
-        setProgrammeItems(pData as { trade_name: string; phase: string }[])
-      }
-
-      const { data: vData } = await supabase
-        .from('variations')
-        .select('id, vo_number, description, trade, value, status')
-        .eq('project_id', project.id)
-      if (!cancelled && vData) {
-        const rows = (vData as Record<string, unknown>[]).filter(
-          (row) =>
-            String(row.status ?? '').toLowerCase() === 'approved',
-        )
-        setApprovedValuationVOs(
-          rows.map((row) => ({
-            id: String(row.id ?? ''),
-            voNumber: String(row.vo_number ?? '').trim() || 'VO',
-            description: String(row.description ?? ''),
-            trade: String(row.trade ?? '—'),
-            value: Number(row.value ?? 0),
-          })),
-        )
-      }
-
+      const voRows = ((voRes.data ?? []) as Record<string, unknown>[]).filter(
+        (v) => String(v.status ?? '').toLowerCase() === 'approved',
+      )
+      setApprovedVariations(
+        voRows.map((v) => ({
+          id: String(v.id ?? ''),
+          voNumber: String(v.vo_number ?? '').trim() || 'VO',
+          description: String(v.description ?? ''),
+          trade: String(v.trade ?? '—'),
+          value: num(v.value as number | string | null | undefined),
+        })),
+      )
       setLoading(false)
     }
-    void load()
+    void loadOnce()
     return () => {
       cancelled = true
     }
   }, [project.id])
 
-  const chronWeeks = useMemo(
-    () => valuationChronologicalWeekLabels(rows),
-    [rows],
-  )
-
+  const chronWeeks = useMemo(() => valuationChronologicalWeekLabels(rows), [rows])
   const activePeriod = useMemo(() => {
     if (chronWeeks.length === 0) return null
-    if (periodOverride && chronWeeks.includes(periodOverride)) {
-      return periodOverride
-    }
+    if (periodOverride && chronWeeks.includes(periodOverride)) return periodOverride
     return chronWeeks[chronWeeks.length - 1] ?? null
   }, [chronWeeks, periodOverride])
 
-  useEffect(() => {
-    setPctDraft({})
-  }, [activePeriod])
-
-  const weekIdx = activePeriod ? chronWeeks.indexOf(activePeriod) : -1
-  const weekOrdinal = weekIdx >= 0 ? weekIdx + 1 : 1
-  const weekRangeStr = formatPortalWeekRangeFromStart(
-    project.start_date,
-    weekOrdinal,
-  )
-  const weekDisplayLine = `WEEK ${weekOrdinal} · ${weekRangeStr}`
-
-  const filteredRows = useMemo(() => {
+  const activeRows = useMemo(() => {
     if (!activePeriod) return []
     return rows
       .filter((r) => r.week_label === activePeriod)
@@ -626,15 +554,13 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
 
   const tradeToPhase = useMemo(() => {
     const m = new Map<string, string>()
-    for (const p of programmeItems) {
-      m.set(p.trade_name.trim().toLowerCase(), p.phase)
-    }
+    for (const p of programmeItems) m.set(p.trade_name.trim().toLowerCase(), p.phase)
     return m
   }, [programmeItems])
 
   const phaseOrder = useMemo(() => {
-    const seen = new Set<string>()
     const out: string[] = []
+    const seen = new Set<string>()
     for (const p of programmeItems) {
       if (!seen.has(p.phase)) {
         seen.add(p.phase)
@@ -645,60 +571,31 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   }, [programmeItems])
 
   const phaseForDescription = useCallback(
-    (desc: string | null): string => {
-      const key = (desc ?? '').trim().toLowerCase()
-      if (!key) return 'Other'
-      return tradeToPhase.get(key) ?? 'Other'
-    },
+    (desc: string | null) => tradeToPhase.get((desc ?? '').trim().toLowerCase()) ?? 'Other',
     [tradeToPhase],
   )
 
   const tableGroups = useMemo(() => {
-    const groups: { phase: string; rows: ValuationRecord[] }[] = []
+    const grouped: { phase: string; rows: ValuationRecord[] }[] = []
     for (const ph of phaseOrder) {
-      const rs = filteredRows.filter((r) => phaseForDescription(r.description) === ph)
-      if (rs.length > 0) groups.push({ phase: ph, rows: rs })
+      const inPhase = activeRows.filter((r) => phaseForDescription(r.description) === ph)
+      if (inPhase.length > 0) grouped.push({ phase: ph, rows: inPhase })
     }
-    const other = filteredRows.filter(
-      (r) => phaseForDescription(r.description) === 'Other',
-    )
-    if (other.length > 0) groups.push({ phase: 'Other', rows: other })
-    return groups
-  }, [filteredRows, phaseOrder, phaseForDescription])
+    const other = activeRows.filter((r) => phaseForDescription(r.description) === 'Other')
+    if (other.length > 0) grouped.push({ phase: 'Other', rows: other })
+    return grouped
+  }, [activeRows, phaseForDescription, phaseOrder])
 
-  const contractSum = useMemo(() => {
-    const lineSum = filteredRows.reduce((s, r) => s + num(r.contract_value), 0)
-    const projectCv =
-      project.contract_value != null ? num(project.contract_value) : 0
-    return projectCv > 0 ? projectCv : lineSum > 0 ? lineSum : 0
-  }, [filteredRows, project.contract_value])
-
-  const thisWeekCertificateBase = useMemo(
-    () =>
-      filteredRows.reduce((s, r) => s + num(r.amount_due), 0),
-    [filteredRows],
+  const weekCertTotal = useMemo(
+    () => activeRows.reduce((s, r) => s + num(r.amount_due), 0),
+    [activeRows],
   )
 
-  const voThisWeekTotal = useMemo(
-    () =>
-      approvedValuationVOs.reduce((s, v) => {
-        const pct = voPctThisWeek[v.id] ?? 0
-        return s + (v.value * pct) / 100
-      }, 0),
-    [approvedValuationVOs, voPctThisWeek],
-  )
-
-  const thisWeekCertificate = thisWeekCertificateBase + voThisWeekTotal
-
-  const variationsTotal = num(project.variations_total)
-  const revisedContract =
-    contractSum > 0 ? contractSum + variationsTotal : contractSum
-
-  const certificatesPaidTotal = useMemo(
+  const paidTotal = useMemo(
     () =>
       certificates.reduce(
         (s, c) =>
-          (c.status ?? '').toLowerCase() === 'paid' || Boolean(c.date_paid)
+          (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
             ? s + num(c.amount)
             : s,
         0,
@@ -706,109 +603,17 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     [certificates],
   )
 
-  const remainingVsCert = Math.max(0, revisedContract - certificatesPaidTotal)
-
-  const drawPctOfContract =
-    revisedContract > 0
-      ? (certificatesPaidTotal / revisedContract) * 100
-      : 0
-
-  const totalWeeksProg = useMemo(() => {
-    if (!project.start_date || !project.handover_date) {
-      return Math.max(chronWeeks.length, 1)
-    }
-    const a = utcMillisFromIsoDate(project.start_date)
-    const b = utcMillisFromIsoDate(project.handover_date)
-    if (a == null || b == null) return Math.max(chronWeeks.length, 1)
-    const wd = countUtcWorkingDaysExclusiveEnd(a, b)
-    if (wd < 0) return Math.max(chronWeeks.length, 1)
-    return Math.max(1, Math.round(wd / 5))
-  }, [project.start_date, project.handover_date, chronWeeks.length])
-
-  const progPct = Math.min(
-    100,
-    Math.round(((weekOrdinal || 1) / totalWeeksProg) * 1000) / 10,
+  const outstandingTotal = useMemo(
+    () =>
+      certificates.reduce(
+        (s, c) =>
+          (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
+            ? s
+            : s + num(c.amount),
+        0,
+      ),
+    [certificates],
   )
-
-  const lockedCount = filteredRows.filter((r) => lockedIds.has(r.id)).length
-
-  const itemsClaimedThisWeek = filteredRows.filter(
-    (r) => num(r.amount_due) > 0,
-  ).length
-
-  const avgPctThisWeek = weightedValuePercent(filteredRows, pctThisWeek)
-
-  const certBarPct =
-    revisedContract > 0
-      ? Math.min(100, (certificatesPaidTotal / revisedContract) * 100)
-      : 0
-
-  async function refetchRows() {
-    const { data, error } = await supabase
-      .from('valuations')
-      .select('*')
-      .eq('project_id', project.id)
-      .order('line_order', { ascending: true })
-    if (!error && data) {
-      setRows(normalizeValuationRows(data as Record<string, unknown>[]))
-    }
-  }
-
-  function resolveWeekNumberForInsert(
-    weekLabel: string,
-    weeks: string[],
-  ): number {
-    const idx = weeks.indexOf(weekLabel)
-    if (idx >= 0) return idx + 1
-    for (const [n, lab] of Object.entries(VALUATION_WEEK_NUM_TO_LABEL)) {
-      if (lab === weekLabel) return Number(n)
-    }
-    const m = /WEEK\s*(\d+)/i.exec(weekLabel)
-    if (m) return Math.min(52, Math.max(1, parseInt(m[1], 10)))
-    return Math.max(1, weeks.length + 1)
-  }
-
-  function rowPctAmounts(cv: number, pct: number) {
-    const pctClamped = Math.min(100, Math.max(0, pct))
-    const amt = Math.round(((cv * pctClamped) / 100) * 100) / 100
-    return { pctClamped, amt }
-  }
-
-  function patchRowPctLocal(r: ValuationRecord, pct: number) {
-    const cv = num(r.contract_value)
-    const { pctClamped, amt } = rowPctAmounts(cv, pct)
-    setRows((prev) =>
-      prev.map((row) =>
-        row.id === r.id
-          ? { ...row, percent_complete: pctClamped, amount_due: amt }
-          : row,
-      ),
-    )
-  }
-
-  async function updateRowPct(r: ValuationRecord, pct: number) {
-    const cv = num(r.contract_value)
-    const { pctClamped, amt } = rowPctAmounts(cv, pct)
-    setRows((prev) =>
-      prev.map((row) =>
-        row.id === r.id
-          ? { ...row, percent_complete: pctClamped, amount_due: amt }
-          : row,
-      ),
-    )
-    const { error } = await supabase
-      .from('valuations')
-      .update({ percent_complete: pctClamped, amount_due: amt })
-      .eq('id', r.id)
-    if (error) void refetchRows()
-  }
-
-  function navigateWeek(delta: number) {
-    if (chronWeeks.length === 0) return
-    const idx = chronWeeks.indexOf(activePeriod ?? '')
-    const n = Math.max(0, Math.min(chronWeeks.length - 1, idx + delta))
-    setPeriodOverride(chronWeeks[n])
-  }
 
   function persistLocks(next: Set<string>) {
     try {
@@ -818,1696 +623,290 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     }
   }
 
-  function toggleLock(id: string) {
-    setLockedIds((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) {
-        if (!confirm('Unlock this line? This allows further claims.')) return prev
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
-      persistLocks(next)
-      return next
-    })
-  }
-
-  async function handleAutoSuggest() {
-    if (!activePeriod) return
-    for (const r of filteredRows) {
-      if (lockedIds.has(r.id)) continue
-      const cv = num(r.contract_value)
-      if (cv <= 0) continue
-      const prev = prevDrawnForTrade(
-        rows,
-        r.description ?? '',
-        activePeriod,
-        chronWeeks,
-      )
-      const pctRem = Math.max(0, ((cv - prev) / cv) * 100)
-      const sug = Math.min(25, Math.max(0, Math.round(pctRem * 0.2 * 10) / 10))
-      await updateRowPct(r, sug)
-    }
-  }
-
-  async function handleClearWeek() {
-    if (!activePeriod) return
-    if (typeof window !== 'undefined' && !confirm('Clear all entries for this week?')) return
-    for (const r of filteredRows) {
-      if (lockedIds.has(r.id)) continue
-      await supabase
-        .from('valuations')
-        .update({ percent_complete: 0, amount_due: 0 })
-        .eq('id', r.id)
-    }
-    setVoPctThisWeek({})
-    void refetchRows()
-  }
-
-  function printCertificate() {
-    if (typeof window !== 'undefined') window.print()
-  }
-
-  const variationContractCol = approvedValuationVOs.reduce((s, v) => s + v.value, 0)
-  const totalContractCol =
-    filteredRows.reduce((s, r) => s + num(r.contract_value), 0) +
-    variationContractCol
-  const totalPrevDrawn = filteredRows.reduce(
-    (s, r) =>
-      s +
-      prevDrawnForTrade(
-        rows,
-        r.description ?? '',
-        activePeriod ?? '',
-        chronWeeks,
-      ),
-    0,
-  )
-  const totalRemaining =
-    filteredRows.reduce((s, r) => {
-      const cv = num(r.contract_value)
-      const prev = prevDrawnForTrade(
-        rows,
-        r.description ?? '',
-        activePeriod ?? '',
-        chronWeeks,
-      )
-      return s + Math.max(0, cv - prev)
-    }, 0) + variationContractCol
-
-  const totalBalanceLeft =
-    filteredRows.reduce((s, r) => {
-      const cv = num(r.contract_value)
-      const claimed =
-        prevDrawnForTrade(
-          rows,
-          r.description ?? '',
-          activePeriod ?? '',
-          chronWeeks,
-        ) + num(r.amount_due)
-      return s + Math.max(0, cv - claimed)
-    }, 0) +
-    approvedValuationVOs.reduce((s, v) => {
-      const pct = voPctThisWeek[v.id] ?? 0
-      const claimed = (v.value * pct) / 100
-      return s + Math.max(0, v.value - claimed)
-    }, 0)
-
-  const totalClaimedDisplay =
-    filteredRows.reduce((s, r) => {
-      const claimed =
-        prevDrawnForTrade(
-          rows,
-          r.description ?? '',
-          activePeriod ?? '',
-          chronWeeks,
-        ) + num(r.amount_due)
-      return s + claimed
-    }, 0) +
-    approvedValuationVOs.reduce((s, v) => {
-      const pct = voPctThisWeek[v.id] ?? 0
-      return s + (v.value * pct) / 100
-    }, 0)
-
-  const footerClaimedPct =
-    revisedContract > 0 ? (totalClaimedDisplay / revisedContract) * 100 : 0
-
-  const certTotalPaid = certificatesPaidTotal
-  const certOutstanding = useMemo(
-    () =>
-      certificates.reduce((s, c) =>
-        (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
-          ? s
-          : s + num(c.amount),
-      0),
-    [certificates],
-  )
-
-  async function handleAdd(e: FormEvent) {
-    e.preventDefault()
-    setFormError('')
-
-    if (!weekLabel.trim()) {
-      setFormError('Valuation period (week) is required.')
-      return
-    }
-
-    const amount = parseFloat(amountThisWeek)
-    if (Number.isNaN(amount)) {
-      setFormError('Enter a valid amount for this week.')
-      return
-    }
-
-    let contractNum: number | null = null
-    if (contractValue.trim()) {
-      contractNum = parseFloat(contractValue)
-      if (Number.isNaN(contractNum)) {
-        setFormError('Contract value must be a valid number.')
-        return
-      }
-    }
-
-    let pctWeek: number | null = null
-    if (percentThisWeekInput.trim()) {
-      pctWeek = parseFloat(percentThisWeekInput)
-      if (Number.isNaN(pctWeek) || pctWeek < 0 || pctWeek > 100) {
-        setFormError('% complete this week must be between 0 and 100.')
-        return
-      }
-    }
-
-    let cumPct: number | null = null
-    if (cumulativePercentInput.trim()) {
-      cumPct = parseFloat(cumulativePercentInput)
-      if (Number.isNaN(cumPct) || cumPct < 0 || cumPct > 100) {
-        setFormError('Cumulative % must be between 0 and 100.')
-        return
-      }
-    }
-
-    const sorted = [...rows].sort((a, b) => a.line_order - b.line_order)
-    const last = sorted[sorted.length - 1]
-    const nextOrder = last ? last.line_order + 1 : 1
-
-    setSaving(true)
-    const wn = resolveWeekNumberForInsert(weekLabel.trim(), chronWeeks)
-    const { error } = await supabase.from('valuations').insert({
-      project_id: project.id,
-      week_number: wn,
-      item_name: description.trim(),
-      contract_value: contractNum,
-      percentage: pctWeek ?? 0,
-      cumulative_percent: cumPct,
-      amount,
-      locked: false,
-      line_order: nextOrder,
-    })
-    setSaving(false)
-
-    if (error) {
-      setFormError(error.message)
-      return
-    }
-
-    setDescription('')
-    setContractValue(
-      project.contract_value != null ? String(project.contract_value) : '',
+  function patchRowPctLocal(rowId: string, pctRaw: string) {
+    const trimmed = pctRaw.trim()
+    const parsed =
+      trimmed === '' || trimmed === '.' || trimmed === '-' ? 0 : parseFloat(trimmed)
+    const pct = Number.isNaN(parsed) ? 0 : Math.min(100, Math.max(0, parsed))
+    setRows((prev) =>
+      prev.map((r) => {
+        if (r.id !== rowId) return r
+        const cv = num(r.contract_value)
+        const amt = Math.round(((pct / 100) * cv) * 100) / 100
+        return { ...r, percent_complete: pct, amount_due: amt }
+      }),
     )
-    setPercentThisWeekInput('')
-    setAmountThisWeek('')
-    setCumulativePercentInput('')
-    setLineStatus('unpaid')
-    setWeekLabel((w) => w.trim())
-
-    const { data, error: refetchError } = await supabase
-      .from('valuations')
-      .select('*')
-      .eq('project_id', project.id)
-      .order('line_order', { ascending: true })
-
-    if (!refetchError && data) {
-      setRows(normalizeValuationRows(data as Record<string, unknown>[]))
-    }
   }
 
-  const activeCount = filteredRows.filter((r) => num(r.percent_complete) > 0)
-    .length
+  async function saveRow(rowId: string, pctRaw: string) {
+    const trimmed = pctRaw.trim()
+    const parsed =
+      trimmed === '' || trimmed === '.' || trimmed === '-' ? 0 : parseFloat(trimmed)
+    const pct = Number.isNaN(parsed) ? 0 : Math.min(100, Math.max(0, parsed))
+    const row = rows.find((r) => r.id === rowId)
+    if (!row) return
+    const cv = num(row.contract_value)
+    const amt = Math.round(((pct / 100) * cv) * 100) / 100
+    setSavingByRowId((s) => ({ ...s, [rowId]: true }))
+    const { error: saveErr } = await supabase
+      .from('valuations')
+      .update({ percent_complete: pct, amount_due: amt })
+      .eq('id', rowId)
+    setSavingByRowId((s) => ({ ...s, [rowId]: false }))
+    if (saveErr) setError(saveErr.message)
+  }
+
+  async function toggleLock(row: ValuationRecord) {
+    const next = new Set(lockedIds)
+    const willLock = !next.has(row.id)
+    if (willLock) {
+      next.add(row.id)
+      const cv = num(row.contract_value)
+      const prev = activePeriod
+        ? prevDrawnForTrade(rows, row.description ?? '', activePeriod, chronWeeks)
+        : 0
+      const remaining = Math.max(0, cv - prev)
+      const pct = cv > 0 ? (remaining / cv) * 100 : 0
+      setRows((prevRows) =>
+        prevRows.map((r) =>
+          r.id === row.id
+            ? { ...r, status: 'paid', percent_complete: pct, amount_due: remaining }
+            : r,
+        ),
+      )
+      const { error: lockErr } = await supabase
+        .from('valuations')
+        .update({ status: 'paid', percent_complete: pct, amount_due: remaining })
+        .eq('id', row.id)
+      if (lockErr) setError(lockErr.message)
+    } else {
+      next.delete(row.id)
+      setRows((prevRows) =>
+        prevRows.map((r) => (r.id === row.id ? { ...r, status: 'unpaid' } : r)),
+      )
+      const { error: unlockErr } = await supabase
+        .from('valuations')
+        .update({ status: 'unpaid' })
+        .eq('id', row.id)
+      if (unlockErr) setError(unlockErr.message)
+    }
+    setLockedIds(next)
+    persistLocks(next)
+  }
+
+  const weekIdx = activePeriod ? chronWeeks.indexOf(activePeriod) : -1
+  const weekDisplay = `WEEK ${weekIdx >= 0 ? weekIdx + 1 : 1}`
 
   return (
-    <div className="val-portal-root" id="pg-valuation">
-      <div className="stats">
-        <div className="sc a">
-          <div className="sl">Contract</div>
-          <div className="sv" style={{ color: 'var(--ac)' }}>
-            {contractSum > 0 ? formatMoneyGBP(contractSum) : '—'}
-          </div>
-          <div className="ss">Original</div>
-        </div>
-        <div className="sc g">
-          <div className="sl">Total Drawn</div>
-          <div className="sv" style={{ color: 'var(--gr)' }}>
-            {formatMoneyGBP(certificatesPaidTotal)}
-          </div>
-          <div className="ss">{drawPctOfContract.toFixed(1)}%</div>
-        </div>
-        <div className="sc b">
-          <div className="sl">This Week Cert</div>
-          <div className="sv" style={{ color: 'var(--bl)' }}>
-            {formatMoneyGBP(thisWeekCertificate)}
-          </div>
-        </div>
-        <div className="sc p">
-          <div className="sl">Remaining</div>
-          <div className="sv" style={{ color: 'var(--pu)' }}>
-            {revisedContract > 0 ? formatMoneyGBP(remainingVsCert) : '—'}
-          </div>
-        </div>
-        <div className="sc t">
-          <div className="sl">Locked Items</div>
-          <div className="sv" style={{ color: 'var(--tl)' }}>
-            {lockedCount}/{filteredRows.length || 0}
-          </div>
-        </div>
-      </div>
-
-      <div className="portal-live-panel" style={{ marginTop: 14 }}>
-        <div className="plp-title">Contract Value Breakdown</div>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 8 }}>
-          <div className="plp-card">
-            <div className="plp-label">Original Contract</div>
-            <div className="plp-value" style={{ color: 'var(--ac)' }}>
-              {contractSum > 0 ? formatMoneyGBP(contractSum) : '—'}
-            </div>
-            <div className="plp-sub">Signed contract value</div>
-          </div>
-          <div className="plp-card accent">
-            <div className="plp-label">Variations Approved</div>
-            <div className="plp-value" style={{ color: 'var(--ac)' }}>
-              {variationsTotal > 0 ? formatMoneyGBP(variationsTotal) : '£0'}
-            </div>
-            <div className="plp-sub">Net approved variations</div>
-          </div>
-          <div className="plp-card accent">
-            <div className="plp-label">Variations Pending</div>
-            <div className="plp-value" style={{ color: 'var(--ac)' }}>£0</div>
-            <div className="plp-sub">0 pending</div>
-          </div>
-          <div className="plp-card success">
-            <div className="plp-label">Revised Contract</div>
-            <div className="plp-value" style={{ color: 'var(--gr)' }}>
-              {revisedContract > 0 ? formatMoneyGBP(revisedContract) : '—'}
-            </div>
-            <div className="plp-sub">Inc. approved vars</div>
-          </div>
-          <div className="plp-card warn">
-            <div className="plp-label">Max Exposure</div>
-            <div className="plp-value" style={{ color: 'var(--rd)' }}>
-              {revisedContract > 0 ? formatMoneyGBP(revisedContract) : '—'}
-            </div>
-            <div className="plp-sub">Inc. all pending vars</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="wk-bar">
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-          <div className="wk-bar-lbl">Valuation Week</div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <button
-              type="button"
-              className="wk-nav-btn"
-              disabled={weekIdx <= 0}
-              onClick={() => navigateWeek(-1)}
-            >
-              ◀
-            </button>
-            <div style={{ textAlign: 'center' }}>
-              <div className="wk-disp">{weekDisplayLine}</div>
-              <div className="wk-dates-lbl">{weekRangeStr}</div>
-            </div>
-            <button
-              type="button"
-              className="wk-nav-btn"
-              disabled={weekIdx < 0 || weekIdx >= chronWeeks.length - 1}
-              onClick={() => navigateWeek(1)}
-            >
-              ▶
-            </button>
-          </div>
-        </div>
-        <div style={{ flex: 1, minWidth: 150 }}>
-          <div className="wk-bar-lbl">Programme</div>
-          <div className="wk-prog-track">
-            <div
-              className="wk-prog-fill"
-              style={{ width: `${progPct}%` }}
-            />
-          </div>
-          <div className="wk-prog-meta">
-            <span>
-              Wk {weekOrdinal} of {totalWeeksProg}
-            </span>
-            <span>{progPct}%</span>
-          </div>
-        </div>
-        <div style={{ display: 'flex', gap: 7, flexWrap: 'wrap' }}>
-          <button type="button" className="btn btn-tl" onClick={handleAutoSuggest}>
-            ⚡ Auto-suggest
-          </button>
-          <button type="button" className="btn btn-ghost" onClick={handleClearWeek}>
-            ✕ Clear week
-          </button>
-        </div>
-        <div>
-          <div className="wk-bar-lbl">Week cert</div>
-          <div className="wk-cert-live">{formatMoneyGBP(thisWeekCertificate)}</div>
-        </div>
-      </div>
-
-      <div className="alert al-i">
-        <span>💡</span>
-        <span>
-          <strong>{weekDisplayLine}</strong> ({weekRangeStr}): {activeCount} items
-          active. Enter % per item based on actual work done. 🔒 Lock only when
-          100% complete on site.
-        </span>
-      </div>
-
-      {loadError ? (
-        <div className="val-portal-error" role="alert">
-          Could not load valuations: {loadError}
+    <div className="space-y-4">
+      {error ? (
+        <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-sm text-red-200">
+          {error}
         </div>
       ) : null}
 
-      {loading ? (
-        <p className="val-loading">Loading…</p>
-      ) : (
-        <div className="two-col">
-          <div>
-            <div className="panel">
-              <div className="ph">
-                <div>
-                  <div className="pt">VALUATION SCHEDULE</div>
-                  <div className="ps">
-                    Week {weekOrdinal} — {weekRangeStr.replace('–', 'to')}
-                  </div>
-                </div>
-                <div className="ph-hint">
-                  🔒 Lock item only when 100% complete on site
-                </div>
-              </div>
-              <div className="vtbl-wrap">
-                <table className="vtbl">
-                  <thead>
-                    <tr>
-                      <th style={{ width: '16%', minWidth: 130 }}>Item</th>
-                      <th>Contract £</th>
-                      <th>Prev Drawn £</th>
-                      <th>Remaining £</th>
-                      <th>Site Status</th>
-                      <th>This Wk %</th>
-                      <th>This Wk £</th>
-                      <th className="th-claimed">Claimed to Date £</th>
-                      <th>Balance Left £</th>
-                      <th className="th-pctsplit">% Claimed / % Left</th>
-                      <th>Lock</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {tableGroups.length === 0 &&
-                    approvedValuationVOs.length === 0 ? (
-                      <tr>
-                        <td colSpan={11} className="val-empty-cell">
-                          No valuation lines for this period.
-                        </td>
-                      </tr>
-                    ) : (
-                      <>
-                        {tableGroups.map((g) => (
-                        <Fragment key={`ph-${g.phase}`}>
-                          <tr>
-                            <td colSpan={11} className="ph-cell">
-                              {g.phase}
-                            </td>
-                          </tr>
-                          {g.rows.map((r) => {
-                            const cv = num(r.contract_value)
-                            const prev = activePeriod
-                              ? prevDrawnForTrade(
-                                  rows,
-                                  r.description ?? '',
-                                  activePeriod,
-                                  chronWeeks,
-                                )
-                              : 0
-                            const rem = Math.max(0, cv - prev)
-                            const pctW = pctThisWeek(r)
-                            const amt = num(r.amount_due)
-                            const cum = pctCumulative(r)
-                            const claimed = prev + amt
-                            const bal = Math.max(0, cv - claimed)
-                            const claimedPct = cv > 0 ? (claimed / cv) * 100 : 0
-                            const leftPct = 100 - claimedPct
-                            const locked = lockedIds.has(r.id)
-                            const pctRow = pctW ?? 0
-                            const isDim =
-                              pctW === 0 || pctW == null
-                                ? !locked
-                                : false
-                            const active =
-                              (pctW ?? 0) > 0 || (cum ?? 0) > 0
-                            return (
-                              <tr
-                                key={r.id}
-                                className={`${locked ? 'locked-row-bg' : ''} ${isDim ? 'dimmed' : ''}`}
-                              >
-                                <td className="td-item">
-                                  {active ? (
-                                    <span className="dot-active" />
-                                  ) : null}
-                                  <span>{r.description?.trim() || '—'}</span>
-                                </td>
-                                <td className="td-mono">{formatMoneyGBP(cv)}</td>
-                                <td className="td-mono td-mu">{formatMoneyGBP(prev)}</td>
-                                <td className="td-mono">
-                                  {rem <= 0 ? '✓ Full' : formatMoneyGBP(rem)}
-                                </td>
-                                <td>
-                                  <span
-                                    className={`badge ${active ? 'b-ac' : 'b-mu'}`}
-                                  >
-                                    {active ? 'Active' : 'Pending'}
-                                  </span>
-                                </td>
-                                <td>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    max={100}
-                                    step={0.5}
-                                    style={{
-                                      width: 55,
-                                      background: '#1E2535',
-                                      border: '1px solid #F4A623',
-                                      borderRadius: 4,
-                                      padding: '4px 6px',
-                                      color: '#F4A623',
-                                      fontFamily: 'DM Mono, monospace',
-                                      fontSize: 12,
-                                      textAlign: 'center',
-                                    }}
-                                    value={
-                                      pctDraft[r.id] !== undefined
-                                        ? pctDraft[r.id]
-                                        : String(pctW ?? 0)
-                                    }
-                                    onFocus={() => {
-                                      setPctDraft((d) => ({
-                                        ...d,
-                                        [r.id]: String(pctW ?? 0),
-                                      }))
-                                    }}
-                                    onChange={(e) => {
-                                      const raw = e.target.value
-                                      setPctDraft((d) => ({ ...d, [r.id]: raw }))
-                                      const trimmed = raw.trim()
-                                      if (
-                                        trimmed === '' ||
-                                        trimmed === '.' ||
-                                        trimmed === '-'
-                                      ) {
-                                        patchRowPctLocal(r, 0)
-                                        return
-                                      }
-                                      const parsed = parseFloat(trimmed)
-                                      if (Number.isNaN(parsed)) return
-                                      patchRowPctLocal(
-                                        r,
-                                        Math.min(100, Math.max(0, parsed)),
-                                      )
-                                    }}
-                                    onBlur={(e) => {
-                                      const raw = e.target.value.trim()
-                                      setPctDraft((d) => ({ ...d, [r.id]: String(Math.min(100, Math.max(0, parseFloat(e.target.value.trim()) || 0))) }))
-                                      const parsed =
-                                        raw === '' || raw === '.' || raw === '-'
-                                          ? 0
-                                          : parseFloat(raw)
-                                      void updateRowPct(
-                                        r,
-                                        Number.isNaN(parsed)
-                                          ? 0
-                                          : Math.min(100, Math.max(0, parsed)),
-                                      )
-                                    }}
-                                  />
-                                </td>
-                                <td className="td-mono td-mu">
-                                  {amt > 0 ? formatMoneyGBP(amt) : '—'}
-                                </td>
-                                <td className="td-claimed">
-                                  <span className="td-claimed-inner">
-                                    {formatMoneyGBP(claimed)}
-                                  </span>
-                                </td>
-                                <td className="td-mono">
-                                  {bal <= 0
-                                    ? '✓ Nil'
-                                    : formatMoneyGBP(bal)}
-                                </td>
-                                <td className="td-split">
-                                  <div className="split-bar-wrap">
-                                    <div
-                                      className="split-bar-fill"
-                                      style={{
-                                        width: `${Math.min(100, claimedPct)}%`,
-                                        background:
-                                          claimedPct >= 100
-                                            ? 'var(--gr)'
-                                            : claimedPct > 50
-                                              ? 'var(--tl)'
-                                              : 'var(--ac)',
-                                      }}
-                                    />
-                                  </div>
-                                  <div className="split-meta">
-                                    <span className="c-tl">
-                                      ✓ {claimedPct.toFixed(1)}%
-                                    </span>
-                                    <span className="c-rd">
-                                      ⬜ {leftPct.toFixed(1)}%
-                                    </span>
-                                  </div>
-                                </td>
-                                <td>
-                                  <button
-                                    type="button"
-                                    className={`lock-btn ${locked ? 'lkd' : ''}`}
-                                    title="Lock only when 100% complete"
-                                    onClick={() => toggleLock(r.id)}
-                                  >
-                                    {locked ? '🔒 Locked' : 'Lock ✓'}
-                                  </button>
-                                </td>
-                              </tr>
-                            )
-                          })}
-                        </Fragment>
-                      ))}
-                        {approvedValuationVOs.length > 0 ? (
-                          <>
-                            <tr>
-                              <td colSpan={11} className="ph-cell">
-                                VARIATIONS
-                              </td>
-                            </tr>
-                            {approvedValuationVOs.map((v) => {
-                              const pct = voPctThisWeek[v.id] ?? 0
-                              const amt =
-                                Math.round(((v.value * pct) / 100) * 100) / 100
-                              const claimed = amt
-                              const bal = Math.max(0, v.value - claimed)
-                              const claimedPct =
-                                v.value > 0 ? (claimed / v.value) * 100 : 0
-                              const leftPct = 100 - claimedPct
-                              const voKey = `vo-${v.id}`
-                              return (
-                                <tr key={voKey}>
-                                  <td className="td-item">
-                                    <span className="dot-active" />
-                                    <span>
-                                      {v.voNumber} · {v.description}
-                                    </span>
-                                  </td>
-                                  <td className="td-mono">
-                                    {formatMoneyGBP(v.value)}
-                                  </td>
-                                  <td className="td-mono td-mu">—</td>
-                                  <td className="td-mono">
-                                    {formatMoneyGBP(v.value)}
-                                  </td>
-                                  <td>
-                                    <span className="badge b-ac">VO</span>
-                                  </td>
-                                  <td
-                                    onClick={(e) => e.stopPropagation()}
-                                    onMouseDown={(e) => e.stopPropagation()}
-                                  >
-                                    <input
-                                      type="number"
-                                      min={0}
-                                      max={100}
-                                      step={0.5}
-                                      style={{
-                                        width: 52,
-                                        fontSize: 11,
-                                        padding: '3px 5px',
-                                        border: `1px solid ${pct > 0 ? 'rgba(244, 166, 35, 0.4)' : 'var(--bd)'}`,
-                                        borderRadius: 4,
-                                        background: 'var(--s2)',
-                                        color: pct > 0 ? 'var(--ac)' : 'var(--tx)',
-                                        textAlign: 'center',
-                                      }}
-                                      value={
-                                        pctDraft[voKey] !== undefined
-                                          ? pctDraft[voKey]
-                                          : String(pct)
-                                      }
-                                      placeholder="0"
-                                      onClick={(e) => e.stopPropagation()}
-                                      onMouseDown={(e) => e.stopPropagation()}
-                                      onFocus={() => {
-                                        setPctDraft((d) => ({
-                                          ...d,
-                                          [voKey]: String(pct),
-                                        }))
-                                      }}
-                                      onBlur={(e) => {
-                                        const raw = e.target.value.trim()
-                                        setPctDraft((d) => {
-                                          const next = { ...d }
-                                          delete next[voKey]
-                                          return next
-                                        })
-                                        const parsed =
-                                          raw === '' ||
-                                          raw === '.' ||
-                                          raw === '-'
-                                            ? 0
-                                            : parseFloat(raw)
-                                        if (Number.isNaN(parsed)) {
-                                          setVoPctThisWeek((p) => ({
-                                            ...p,
-                                            [v.id]: 0,
-                                          }))
-                                        } else {
-                                          setVoPctThisWeek((p) => ({
-                                            ...p,
-                                            [v.id]: Math.min(
-                                              100,
-                                              Math.max(0, parsed),
-                                            ),
-                                          }))
-                                        }
-                                      }}
-                                      onChange={(e) => {
-                                        const raw = e.target.value
-                                        setPctDraft((d) => ({
-                                          ...d,
-                                          [voKey]: raw,
-                                        }))
-                                        const t = raw.trim()
-                                        if (
-                                          t === '' ||
-                                          t === '.' ||
-                                          t === '-'
-                                        ) {
-                                          setVoPctThisWeek((p) => ({
-                                            ...p,
-                                            [v.id]: 0,
-                                          }))
-                                          return
-                                        }
-                                        const n = parseFloat(raw)
-                                        if (Number.isNaN(n)) return
-                                        setVoPctThisWeek((p) => ({
-                                          ...p,
-                                          [v.id]: Math.min(100, Math.max(0, n)),
-                                        }))
-                                      }}
-                                    />
-                                  </td>
-                                  <td className="td-mono td-mu">
-                                    {amt > 0 ? formatMoneyGBP(amt) : '—'}
-                                  </td>
-                                  <td className="td-claimed">
-                                    <span className="td-claimed-inner">
-                                      {formatMoneyGBP(claimed)}
-                                    </span>
-                                  </td>
-                                  <td className="td-mono">
-                                    {bal <= 0
-                                      ? '✓ Nil'
-                                      : formatMoneyGBP(bal)}
-                                  </td>
-                                  <td className="td-split">
-                                    <div className="split-bar-wrap">
-                                      <div
-                                        className="split-bar-fill"
-                                        style={{
-                                          width: `${Math.min(100, claimedPct)}%`,
-                                          background:
-                                            claimedPct >= 100
-                                              ? 'var(--gr)'
-                                              : claimedPct > 50
-                                                ? 'var(--tl)'
-                                                : 'var(--ac)',
-                                        }}
-                                      />
-                                    </div>
-                                    <div className="split-meta">
-                                      <span className="c-tl">
-                                        ✓ {claimedPct.toFixed(1)}%
-                                      </span>
-                                      <span className="c-rd">
-                                        ⬜ {leftPct.toFixed(1)}%
-                                      </span>
-                                    </div>
-                                  </td>
-                                  <td>—</td>
-                                </tr>
-                              )
-                            })}
-                          </>
-                        ) : null}
-                      </>
-                    )}
-                  </tbody>
-                  <tfoot>
-                    <tr className="foot-totals">
-                      <td>TOTALS</td>
-                      <td className="foot-ac">{formatMoneyGBP(totalContractCol)}</td>
-                      <td className="foot-mu">{formatMoneyGBP(totalPrevDrawn)}</td>
-                      <td className="foot-mu">{formatMoneyGBP(totalRemaining)}</td>
-                      <td />
-                      <td />
-                      <td className="foot-gr">{formatMoneyGBP(thisWeekCertificate)}</td>
-                      <td className="foot-claimed">{formatMoneyGBP(totalClaimedDisplay)}</td>
-                      <td className="foot-rd">{formatMoneyGBP(totalBalanceLeft)}</td>
-                      <td className="foot-split">
-                        <div className="split-bar-wrap foot-total-bar">
-                          <div
-                            style={{
-                              width: `${Math.min(100, footerClaimedPct)}%`,
-                              height: '100%',
-                              background: 'var(--tl)',
-                              borderRadius: 3,
-                            }}
-                          />
-                        </div>
-                        <div className="split-meta">
-                          <span className="c-tl">
-                            ✓ {footerClaimedPct.toFixed(1)}%
-                          </span>
-                          <span className="c-rd">
-                            ⬜ {(100 - footerClaimedPct).toFixed(1)}%
-                          </span>
-                        </div>
-                      </td>
-                      <td />
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
-              <div className="vtbl-footnote">
-                Weeks 1 &amp; 2 loaded from your valuation file. Adjust any figures — nothing is locked until you lock it manually.
-              </div>
-            </div>
-          </div>
-
-          <div>
-            <div className="cert-side">
-              <div className="cert-hd">
-                <div className="cert-ttl">VALUATION CERT</div>
-                <div className="cert-sub">
-                  Week {weekOrdinal} — {weekRangeStr.split('–')[0]?.trim()}
-                </div>
-              </div>
-              <div className="cert-bd">
-                <div className="cbox cbox-ac">
-                  <div className="cbox-lbl">This Week Certificate</div>
-                  <div className="cbox-val cbox-wk">{formatMoneyGBP(thisWeekCertificate)}</div>
-                </div>
-                <div className="cbox cbox-gr">
-                  <div className="cbox-lbl">Cumulative Drawn</div>
-                  <div className="cbox-val cbox-cum">{formatMoneyGBP(certificatesPaidTotal)}</div>
-                  <div className="cbox-sub">
-                    {revisedContract > 0
-                      ? `${((certificatesPaidTotal / revisedContract) * 100).toFixed(1)}% of ${formatMoneyGBP(revisedContract)}`
-                      : '—'}
-                  </div>
-                </div>
-                <div className="cbox cbox-rd">
-                  <div className="cbox-lbl">Balance to Draw</div>
-                  <div className="cbox-val cbox-bal">
-                    {revisedContract > 0
-                      ? formatMoneyGBP(Math.max(0, revisedContract - certificatesPaidTotal))
-                      : '—'}
-                  </div>
-                </div>
-                <div className="cert-crows">
-                  <div className="crow">
-                    <span className="crow-l">Items claimed</span>
-                    <span className="crow-v" style={{ color: 'var(--bl)' }}>
-                      {itemsClaimedThisWeek}
-                    </span>
-                  </div>
-                  <div className="crow">
-                    <span className="crow-l">Items locked</span>
-                    <span className="crow-v" style={{ color: 'var(--gr)' }}>
-                      {lockedCount}
-                    </span>
-                  </div>
-                  <div className="crow">
-                    <span className="crow-l">Avg % this week</span>
-                    <span className="crow-v" style={{ color: 'var(--tl)' }}>
-                      {avgPctThisWeek != null
-                        ? `${avgPctThisWeek.toFixed(1)}%`
-                        : '—'}
-                    </span>
-                  </div>
-                </div>
-                <div className="cert-bar-lbl">
-                  <span>Drawn vs contract</span>
-                  <span>{certBarPct.toFixed(1)}%</span>
-                </div>
-                <div className="bigbar">
-                  <div
-                    className="bigbar-fill"
-                    style={{
-                      width: `${certBarPct}%`,
-                      background: 'linear-gradient(90deg, var(--bl), var(--ac))',
-                    }}
-                  />
-                </div>
-                <button type="button" className="btn btn-ac cert-print" onClick={printCertificate}>
-                  ↓ Print Certificate
-                </button>
-              </div>
-            </div>
-          </div>
+      <div className="flex items-center justify-between rounded-lg border border-[#1E2535] bg-[#0F1219] px-4 py-3">
+        <div className="text-sm text-[#94A3B8]">{weekDisplay}</div>
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            className="rounded border border-[#1E2535] px-2 py-1 text-xs text-[#E2E8F8]"
+            onClick={() => {
+              const idx = Math.max(0, chronWeeks.indexOf(activePeriod ?? '') - 1)
+              setPeriodOverride(chronWeeks[idx] ?? null)
+            }}
+          >
+            Prev
+          </button>
+          <button
+            type="button"
+            className="rounded border border-[#1E2535] px-2 py-1 text-xs text-[#E2E8F8]"
+            onClick={() => {
+              const idx = Math.min(
+                chronWeeks.length - 1,
+                chronWeeks.indexOf(activePeriod ?? '') + 1,
+              )
+              setPeriodOverride(chronWeeks[idx] ?? null)
+            }}
+          >
+            Next
+          </button>
         </div>
-      )}
+      </div>
 
-      <div className="payment-tracker-wrap">
-        <div className="panel">
-          <div className="ph">
-            <div>
-              <div className="pt">PAYMENT TRACKER</div>
-              <div className="ps">Certificates issued · Mark each as paid when received</div>
-            </div>
-            <div className="pt-meta">
-              <span>
-                Total Paid:{' '}
-                <span style={{ color: 'var(--gr)' }}>{formatMoneyGBP(certTotalPaid)}</span>
-              </span>
-              <span>
-                Outstanding:{' '}
-                <span style={{ color: 'var(--rd)' }}>{formatMoneyGBP(certOutstanding)}</span>
-              </span>
-            </div>
-          </div>
-          <div className="pt-table-wrap">
-            <table className="pt-table">
-              <thead>
+      <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
+        <div className="overflow-x-auto rounded-lg border border-[#1E2535] bg-[#0F1219]">
+          <table className="min-w-full text-sm">
+            <thead className="bg-[#111622] text-xs uppercase text-[#94A3B8]">
+              <tr>
+                <th className="px-3 py-2 text-left">Item</th>
+                <th className="px-3 py-2 text-left">Contract £</th>
+                <th className="px-3 py-2 text-left">Prev Drawn £</th>
+                <th className="px-3 py-2 text-left">Remaining £</th>
+                <th className="px-3 py-2 text-left">Site Status</th>
+                <th className="px-3 py-2 text-left">This Wk %</th>
+                <th className="px-3 py-2 text-left">This Wk £</th>
+                <th className="px-3 py-2 text-left">Claimed To Date £</th>
+                <th className="px-3 py-2 text-left">Balance Left £</th>
+                <th className="px-3 py-2 text-left">Lock</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
                 <tr>
-                  <th>Certificate</th>
-                  <th>Amount £</th>
-                  <th>Date Issued</th>
-                  <th>Due Date</th>
-                  <th>Date Paid</th>
-                  <th>Status</th>
-                  <th>Days O/S</th>
+                  <td className="px-3 py-4 text-[#94A3B8]" colSpan={10}>
+                    Loading…
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {certificates.map((c) => {
-                  const isPaid =
-                    (c.status ?? '').toLowerCase() === 'paid' || Boolean(c.date_paid)
-                  const due = c.due_date ? new Date(c.due_date) : null
-                  const now = new Date()
-                  const overdue = !isPaid && due != null && due.getTime() < now.getTime()
-                  const daysOs =
-                    overdue && due
-                      ? Math.floor((now.getTime() - due.getTime()) / 86400000)
-                      : 0
-                  return (
-                    <tr key={`pt-${c.id}`} style={overdue ? { background: 'rgba(255,61,87,.03)' } : undefined}>
-                      <td>{c.certificate_number}</td>
-                      <td className="td-mono">{formatMoneyGBP(num(c.amount))}</td>
-                      <td className="td-mono">{formatIsoDateDmy(c.date_issued)}</td>
-                      <td className="td-mono">{formatIsoDateDmy(c.due_date)}</td>
-                      <td className="td-mono">{formatIsoDateDmy(c.date_paid)}</td>
-                      <td>
-                        <span className={`badge ${isPaid ? 'b-gr' : 'b-ac'}`}>{isPaid ? 'PAID' : 'UNPAID'}</span>
+              ) : null}
+              {!loading &&
+                tableGroups.map((group) => (
+                  <Fragment key={group.phase}>
+                    <tr>
+                      <td
+                        className="bg-[#0B0F17] px-3 py-2 font-semibold text-[#F4A623]"
+                        colSpan={10}
+                      >
+                        {group.phase}
                       </td>
-                      <td className="td-mono">{daysOs > 0 ? `${daysOs}d` : '—'}</td>
                     </tr>
-                  )
-                })}
-                {certificates.length === 0 ? (
-                  <tr>
-                    <td colSpan={7} className="val-empty-cell">
-                      No certificates yet.
-                    </td>
-                  </tr>
-                ) : null}
-              </tbody>
-            </table>
-          </div>
+                    {group.rows.map((r) => {
+                      const cv = num(r.contract_value)
+                      const prev = activePeriod
+                        ? prevDrawnForTrade(rows, r.description ?? '', activePeriod, chronWeeks)
+                        : 0
+                      const thisWk = num(r.amount_due)
+                      const claimed = prev + thisWk
+                      const bal = Math.max(0, cv - claimed)
+                      const locked = lockedIds.has(r.id)
+                      const pctValue =
+                        pctDraft[r.id] !== undefined
+                          ? pctDraft[r.id]
+                          : String(pctThisWeek(r) ?? 0)
+                      return (
+                        <tr key={r.id} className="border-t border-[#1E2535] text-[#E2E8F8]">
+                          <td className="px-3 py-2">{r.description ?? '—'}</td>
+                          <td className="px-3 py-2">{formatMoneyGBP(cv)}</td>
+                          <td className="px-3 py-2">{formatMoneyGBP(prev)}</td>
+                          <td className="px-3 py-2">{formatMoneyGBP(Math.max(0, cv - prev))}</td>
+                          <td className="px-3 py-2">
+                            {(r.status ?? '').toLowerCase() === 'paid' ? 'Complete' : 'Active'}
+                          </td>
+                          <td className="px-3 py-2">
+                            <input
+                              type="number"
+                              min={0}
+                              max={100}
+                              step={0.5}
+                              disabled={locked}
+                              value={pctValue}
+                              onChange={(e) => {
+                                const v = e.target.value
+                                setPctDraft((d) => ({ ...d, [r.id]: v }))
+                                patchRowPctLocal(r.id, v)
+                              }}
+                              onBlur={(e) => {
+                                const v = e.target.value
+                                setPctDraft((d) => ({ ...d, [r.id]: v }))
+                                void saveRow(r.id, v)
+                              }}
+                              className="w-[72px] rounded border border-[#F4A623] bg-[#1E2535] px-2 py-1 text-center text-xs text-[#F4A623]"
+                            />
+                          </td>
+                          <td className="px-3 py-2">{formatMoneyGBP(thisWk)}</td>
+                          <td className="px-3 py-2">{formatMoneyGBP(claimed)}</td>
+                          <td className="px-3 py-2">{formatMoneyGBP(bal)}</td>
+                          <td className="px-3 py-2">
+                            <button
+                              type="button"
+                              onClick={() => void toggleLock(r)}
+                              className="rounded border border-[#1E2535] px-2 py-1 text-xs"
+                            >
+                              {locked ? 'Locked' : 'Lock'}
+                            </button>
+                            {savingByRowId[r.id] ? (
+                              <span className="ml-2 text-[10px] text-[#94A3B8]">Saving…</span>
+                            ) : null}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </Fragment>
+                ))}
+            </tbody>
+          </table>
         </div>
-      </div>
 
-      <div className="panel val-add-panel">
-        <div className="ph">
+        <div className="space-y-3 rounded-lg border border-[#1E2535] bg-[#0F1219] p-4">
           <div>
-            <div className="pt">ADD VALUATION LINE</div>
-            <div className="ps">New trade line for a certificate period</div>
+            <div className="text-[11px] uppercase tracking-wide text-[#94A3B8]">Week Cert</div>
+            <div className="text-2xl font-semibold text-[#F4A623]">
+              {formatMoneyGBP(weekCertTotal)}
+            </div>
           </div>
-        </div>
-        <div className="cert-bd">
-          <form className="val-add-form" onSubmit={handleAdd}>
-            <input
-              type="text"
-              value={weekLabel}
-              onChange={(e) => setWeekLabel(e.target.value)}
-              placeholder="Week label"
-              className="pi-input"
-            />
-            <input
-              type="text"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Description / trade"
-              className="pi-input"
-            />
-            <input
-              type="number"
-              value={contractValue}
-              onChange={(e) => setContractValue(e.target.value)}
-              placeholder="Contract £"
-              className="pi-input"
-            />
-            <input
-              type="number"
-              value={percentThisWeekInput}
-              onChange={(e) => setPercentThisWeekInput(e.target.value)}
-              placeholder="This wk %"
-              className="pi-input"
-            />
-            <input
-              type="number"
-              value={amountThisWeek}
-              onChange={(e) => setAmountThisWeek(e.target.value)}
-              placeholder="This wk £"
-              className="pi-input"
-            />
-            <input
-              type="number"
-              value={cumulativePercentInput}
-              onChange={(e) => setCumulativePercentInput(e.target.value)}
-              placeholder="Cumulative %"
-              className="pi-input"
-            />
-            <select
-              value={lineStatus}
-              onChange={(e) =>
-                setLineStatus(e.target.value as 'paid' | 'unpaid')
-              }
-              className="pi-input"
-            >
-              <option value="unpaid">Unpaid</option>
-              <option value="paid">Paid</option>
-            </select>
-            <button type="submit" disabled={saving} className="btn btn-ac">
-              {saving ? 'Saving…' : 'Add line'}
-            </button>
-          </form>
-          {formError ? (
-            <p className="val-form-error" role="alert">
-              {formError}
-            </p>
-          ) : null}
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-[#94A3B8]">Paid To Date</div>
+            <div className="text-lg text-[#E2E8F8]">{formatMoneyGBP(paidTotal)}</div>
+          </div>
+          <div>
+            <div className="text-[11px] uppercase tracking-wide text-[#94A3B8]">
+              Outstanding Certs
+            </div>
+            <div className="text-lg text-[#E2E8F8]">{formatMoneyGBP(outstandingTotal)}</div>
+          </div>
         </div>
       </div>
 
-      <style jsx>{`
-        .val-portal-root {
-          --bg: #080a0f;
-          --s: #0f1219;
-          --s2: #161b26;
-          --bd: #1e2535;
-          --tx: #e2e8f8;
-          --mu: #4a5568;
-          --ac: #f4a623;
-          --gr: #00e676;
-          --rd: #ff3d57;
-          --bl: #3b8bff;
-          --tl: #00bfa5;
-          --pu: #8b5cf6;
-          color: var(--tx);
-          font-family: 'DM Mono', monospace;
-          font-size: 9px;
-          max-width: 1440px;
-          margin: 0 auto;
-          padding: 20px 28px;
-          position: relative;
-          z-index: 1;
-        }
-        .stats {
-          display: grid;
-          grid-template-columns: repeat(5, 1fr);
-          gap: 10px;
-          margin-bottom: 16px;
-        }
-        .sc {
-          background: var(--s);
-          border: 1px solid var(--bd);
-          border-radius: 12px;
-          padding: 12px 14px;
-          position: relative;
-          overflow: hidden;
-        }
-        .sc::before {
-          content: '';
-          position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          height: 2px;
-          border-radius: 12px 12px 0 0;
-        }
-        .sc.a::before {
-          background: var(--ac);
-        }
-        .sc.g::before {
-          background: var(--gr);
-        }
-        .sc.b::before {
-          background: var(--bl);
-        }
-        .sc.p::before {
-          background: var(--pu);
-        }
-        .sc.t::before {
-          background: var(--tl);
-        }
-        .sl {
-          font-size: 9px;
-          letter-spacing: 1px;
-          text-transform: uppercase;
-          color: var(--mu);
-          margin-bottom: 3px;
-        }
-        .sv {
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: 22px;
-          letter-spacing: 1px;
-          line-height: 1;
-        }
-        .ss {
-          font-size: 9px;
-          color: var(--mu);
-          margin-top: 2px;
-        }
-        .portal-live-panel {
-          background: var(--s);
-          border: 1px solid var(--bd);
-          border-radius: 12px;
-          padding: 12px;
-        }
-        .plp-title {
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: 18px;
-          letter-spacing: 1.6px;
-          color: #f8fafc;
-          margin-bottom: 10px;
-        }
-        .plp-card {
-          background: #080a0f;
-          border: 1px solid var(--bd);
-          border-radius: 10px;
-          padding: 10px;
-        }
-        .plp-card.accent {
-          background: rgba(244, 166, 35, 0.05);
-          border-color: rgba(244, 166, 35, 0.2);
-        }
-        .plp-card.success {
-          background: rgba(0, 230, 118, 0.05);
-          border-color: rgba(0, 230, 118, 0.2);
-        }
-        .plp-card.warn {
-          background: rgba(255, 61, 87, 0.05);
-          border-color: rgba(255, 61, 87, 0.2);
-        }
-        .plp-label {
-          font-size: 9px;
-          letter-spacing: 1px;
-          text-transform: uppercase;
-          color: var(--mu);
-        }
-        .plp-value {
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: 26px;
-          margin-top: 4px;
-        }
-        .plp-sub {
-          font-size: 9px;
-          color: var(--mu);
-          margin-top: 3px;
-        }
-        .wk-bar {
-          background: var(--s);
-          border: 1px solid var(--bd);
-          border-radius: 12px;
-          padding: 12px 18px;
-          margin-bottom: 14px;
-          display: flex;
-          align-items: center;
-          gap: 16px;
-          flex-wrap: wrap;
-        }
-        .wk-bar-lbl {
-          font-size: 9px;
-          letter-spacing: 1px;
-          text-transform: uppercase;
-          color: var(--mu);
-          margin-bottom: 3px;
-        }
-        .wk-nav-btn {
-          background: var(--s2);
-          border: 1px solid var(--bd);
-          border-radius: 6px;
-          padding: 5px 11px;
-          font-size: 12px;
-          color: var(--tx);
-          cursor: pointer;
-        }
-        .wk-nav-btn:hover:not(:disabled) {
-          border-color: var(--ac);
-          color: var(--ac);
-        }
-        .wk-nav-btn:disabled {
-          opacity: 0.35;
-          cursor: not-allowed;
-        }
-        .wk-disp {
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: 20px;
-          letter-spacing: 2px;
-          color: var(--ac);
-          min-width: 110px;
-          text-align: center;
-        }
-        .wk-dates-lbl {
-          font-size: 10px;
-          color: var(--mu);
-          text-align: center;
-        }
-        .wk-prog-track {
-          height: 7px;
-          background: var(--s2);
-          border-radius: 3px;
-          overflow: hidden;
-          border: 1px solid var(--bd);
-        }
-        .wk-prog-fill {
-          height: 100%;
-          background: linear-gradient(90deg, #b37200, #f4a623);
-          border-radius: 3px;
-          transition: width 0.4s;
-        }
-        .wk-prog-meta {
-          display: flex;
-          justify-content: space-between;
-          margin-top: 2px;
-          font-size: 9px;
-          color: var(--mu);
-        }
-        .wk-cert-live {
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: 24px;
-          letter-spacing: 1px;
-          color: var(--gr);
-        }
-        .btn {
-          font-family: 'Outfit', sans-serif;
-          font-size: 12px;
-          font-weight: 500;
-          padding: 7px 13px;
-          border-radius: 7px;
-          cursor: pointer;
-          border: 1px solid transparent;
-        }
-        .btn-ac {
-          background: var(--ac);
-          color: #000;
-          border-color: var(--ac);
-        }
-        .btn-ghost {
-          background: transparent;
-          border-color: var(--bd);
-          color: var(--tx);
-        }
-        .btn-tl {
-          background: rgba(0, 191, 165, 0.1);
-          border-color: rgba(0, 191, 165, 0.3);
-          color: var(--tl);
-        }
-        .alert {
-          border-radius: 9px;
-          padding: 9px 13px;
-          margin-bottom: 13px;
-          display: flex;
-          align-items: center;
-          gap: 9px;
-          font-size: 12px;
-        }
-        .al-i {
-          background: rgba(59, 139, 255, 0.07);
-          border: 1px solid rgba(59, 139, 255, 0.2);
-          color: var(--bl);
-        }
-        .two-col {
-          display: grid;
-          grid-template-columns: 1fr 300px;
-          gap: 14px;
-          align-items: start;
-        }
-        .panel {
-          background: var(--s);
-          border: 1px solid var(--bd);
-          border-radius: 16px;
-          overflow: hidden;
-          margin-bottom: 14px;
-        }
-        .ph {
-          padding: 12px 18px;
-          border-bottom: 1px solid var(--bd);
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          background: rgba(244, 166, 35, 0.03);
-        }
-        .pt {
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: 16px;
-          letter-spacing: 2px;
-        }
-        .ps {
-          font-size: 10px;
-          color: var(--mu);
-        }
-        .ph-hint {
-          font-size: 9px;
-          color: var(--mu);
-        }
-        .vtbl-wrap {
-          overflow-x: auto;
-          max-height: 60vh;
-          overflow-y: auto;
-        }
-        .vtbl {
-          width: 100%;
-          border-collapse: collapse;
-        }
-        .vtbl thead th {
-          background: var(--s2);
-          color: var(--mu);
-          font-size: 9px;
-          letter-spacing: 1px;
-          text-transform: uppercase;
-          padding: 8px 9px;
-          text-align: left;
-          border-bottom: 1px solid var(--bd);
-          white-space: nowrap;
-          position: sticky;
-          top: 0;
-          z-index: 5;
-        }
-        .th-claimed {
-          background: rgba(0, 230, 118, 0.08) !important;
-          color: var(--gr) !important;
-        }
-        .th-pctsplit {
-          background: rgba(0, 191, 165, 0.08) !important;
-          color: var(--tl) !important;
-          min-width: 160px;
-        }
-        .vtbl td {
-          padding: 5px 9px;
-          border-bottom: 1px solid rgba(30, 37, 53, 0.8);
-          vertical-align: middle;
-          font-size: 11px;
-        }
-        .ph-cell {
-          background: rgba(244, 166, 35, 0.04);
-          font-size: 9px;
-          font-weight: 600;
-          letter-spacing: 0.1em;
-          text-transform: uppercase;
-          color: var(--mu);
-          padding: 4px 9px;
-        }
-        .locked-row-bg {
-          background: rgba(0, 230, 118, 0.03);
-        }
-        .dimmed {
-          opacity: 0.38;
-        }
-        .td-item {
-          font-weight: 500;
-          padding: 5px 9px;
-        }
-        .dot-active {
-          display: inline-block;
-          width: 5px;
-          height: 5px;
-          border-radius: 50%;
-          background: var(--gr);
-          margin-right: 4px;
-          vertical-align: middle;
-        }
-        .td-mono {
-          font-size: 10px;
-        }
-        .td-mu {
-          color: var(--mu);
-        }
-        .td-claimed {
-          background: rgba(0, 230, 118, 0.04);
-        }
-        .td-claimed-inner {
-          font-size: 11px;
-          font-weight: 500;
-          color: var(--tl);
-        }
-        .td-split {
-          background: rgba(0, 191, 165, 0.04);
-          min-width: 160px;
-        }
-        .split-bar-wrap {
-          flex: 1;
-          height: 12px;
-          background: var(--s2);
-          border-radius: 3px;
-          overflow: hidden;
-          border: 1px solid var(--bd);
-        }
-        .split-bar-fill {
-          height: 100%;
-          border-radius: 3px;
-          transition: width 0.3s;
-        }
-        .split-meta {
-          display: flex;
-          justify-content: space-between;
-          margin-top: 3px;
-  font-size: 9px;
-        }
-        .c-tl {
-          color: var(--tl);
-        }
-        .c-rd {
-          color: var(--rd);
-        }
-        .badge {
-          display: inline-flex;
-          align-items: center;
-          padding: 2px 7px;
-          border-radius: 4px;
-          font-size: 9px;
-          white-space: nowrap;
-        }
-        .b-ac {
-          background: rgba(244, 166, 35, 0.1);
-          color: var(--ac);
-        }
-        .b-mu {
-          background: rgba(74, 85, 104, 0.2);
-          color: var(--mu);
-        }
-        .b-gr {
-          background: rgba(0, 230, 118, 0.1);
-          color: var(--gr);
-        }
-        .lock-btn {
-          background: transparent;
-          border: 1px solid var(--bd);
-          border-radius: 4px;
-          color: var(--mu);
-          font-size: 9px;
-          padding: 2px 6px;
-          cursor: pointer;
-          font-family: 'DM Mono', monospace;
-        }
-        .lock-btn:hover {
-          border-color: var(--gr);
-          color: var(--gr);
-        }
-        .lock-btn.lkd {
-          background: rgba(0, 230, 118, 0.08);
-          border-color: rgba(0, 230, 118, 0.3);
-          color: var(--gr);
-        }
-        .foot-totals td {
-          border-top: 2px solid var(--bd);
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: 13px;
-          letter-spacing: 1px;
-        }
-        .foot-ac {
-          color: var(--ac);
-        }
-        .foot-mu {
-          font-size: 11px;
-          color: var(--mu);
-        }
-        .foot-gr {
-          font-size: 15px;
-          color: var(--gr);
-        }
-        .foot-claimed {
-          font-size: 15px;
-          color: var(--tl);
-          background: rgba(0, 230, 118, 0.06);
-        }
-        .foot-rd {
-          font-size: 14px;
-          color: var(--rd);
-        }
-        .vtbl-footnote {
-          padding: 7px 12px;
-          font-size: 9px;
-          color: var(--mu);
-          border-top: 1px solid var(--bd);
-        }
-        .cert-side {
-          background: var(--s);
-          border: 1px solid var(--bd);
-          border-radius: 14px;
-          overflow: hidden;
-          position: sticky;
-          top: 110px;
-        }
-        .cert-hd {
-          background: linear-gradient(
-            135deg,
-            rgba(244, 166, 35, 0.08),
-            rgba(0, 230, 118, 0.04)
-          );
-          border-bottom: 1px solid var(--bd);
-          padding: 13px 16px;
-        }
-        .cert-ttl {
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: 17px;
-          letter-spacing: 2px;
-          color: var(--ac);
-        }
-        .cert-sub {
-          font-size: 9px;
-          color: var(--mu);
-          margin-top: 1px;
-        }
-        .cert-bd {
-          padding: 13px 15px;
-        }
-        .cbox {
-          border-radius: 9px;
-          padding: 11px 13px;
-          text-align: center;
-          margin-bottom: 9px;
-        }
-        .cbox-ac {
-          background: rgba(244, 166, 35, 0.06);
-          border: 1px solid rgba(244, 166, 35, 0.2);
-        }
-        .cbox-gr {
-          background: rgba(0, 230, 118, 0.05);
-          border: 1px solid rgba(0, 230, 118, 0.15);
-        }
-        .cbox-rd {
-          background: rgba(255, 61, 87, 0.04);
-          border: 1px solid rgba(255, 61, 87, 0.15);
-        }
-        .cbox-lbl {
-          font-size: 9px;
-          letter-spacing: 1.5px;
-          text-transform: uppercase;
-          color: var(--mu);
-          margin-bottom: 3px;
-        }
-        .cbox-val {
-          font-family: 'Bebas Neue', sans-serif;
-          letter-spacing: 1px;
-        }
-        .cbox-wk {
-          font-size: 32px;
-          color: var(--ac);
-        }
-        .cbox-cum {
-          font-size: 20px;
-          color: var(--gr);
-        }
-        .cbox-bal {
-          font-size: 17px;
-          color: var(--rd);
-        }
-        .cbox-sub {
-          font-size: 9px;
-          color: var(--mu);
-          margin-top: 2px;
-        }
-        .cert-crows {
-          margin-bottom: 10px;
-        }
-        .crow {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 5px 0;
-          border-bottom: 1px solid rgba(30, 37, 53, 0.7);
-          font-size: 11px;
-        }
-        .crow:last-child {
-          border-bottom: none;
-        }
-        .crow-l {
-          color: var(--mu);
-        }
-        .crow-v {
-          font-family: 'Bebas Neue', sans-serif;
-          font-size: 14px;
-        }
-        .cert-bar-lbl {
-          font-size: 9px;
-          color: var(--mu);
-          margin-bottom: 4px;
-          display: flex;
-          justify-content: space-between;
-        }
-        .bigbar {
-          height: 8px;
-          background: var(--s2);
-          border-radius: 4px;
-          overflow: hidden;
-          border: 1px solid var(--bd);
-          margin: 4px 0;
-        }
-        .bigbar-fill {
-          height: 100%;
-          border-radius: 4px;
-          transition: width 0.6s;
-        }
-        .cert-print {
-          width: 100%;
-          margin-top: 12px;
-        }
-        .payment-tracker-wrap {
-          padding: 0 0 20px;
-        }
-        .pt-meta {
-          display: flex;
-          gap: 8px;
-          font-size: 10px;
-          color: var(--mu);
-          flex-wrap: wrap;
-        }
-        .pt-table-wrap {
-          overflow-x: auto;
-        }
-        .pt-table {
-          width: 100%;
-          border-collapse: collapse;
-        }
-        .pt-table th {
-          text-align: left;
-          color: var(--mu);
-          font-size: 9px;
-          letter-spacing: 1px;
-          text-transform: uppercase;
-          padding: 8px 12px;
-          border-bottom: 1px solid var(--bd);
-          background: var(--s2);
-        }
-        .pt-table td {
-          padding: 8px 12px;
-          border-bottom: 1px solid rgba(30, 37, 53, 0.7);
-          font-size: 11px;
-        }
-        .val-add-form {
-          display: grid;
-          grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
-          gap: 8px;
-          align-items: end;
-        }
-        .pi-input {
-          padding: 6px 8px;
-          border: 1px solid var(--bd);
-          border-radius: 4px;
-          background: var(--s2);
-          color: var(--tx);
-          font-size: 11px;
-        }
-        .val-add-panel {
-          margin-top: 8px;
-        }
-        .val-add-panel .pt {
-          font-size: 14px;
-        }
-        .val-portal-error {
-          padding: 12px;
-          border: 1px solid rgba(255, 61, 87, 0.4);
-          border-radius: 8px;
-          color: #fecaca;
-          margin-bottom: 12px;
-        }
-        .val-loading {
-          text-align: center;
-          padding: 24px;
-          color: var(--mu);
-        }
-        .val-empty-cell {
-          text-align: center;
-          color: var(--mu);
-          padding: 16px;
-        }
-        .val-form-error {
-          color: #fecaca;
-          margin-top: 8px;
-          font-size: 10px;
-        }
-        @media (max-width: 1024px) {
-          .two-col {
-            grid-template-columns: 1fr;
-          }
-          .cert-side {
-            position: relative;
-            top: 0;
-          }
-          .stats {
-            grid-template-columns: repeat(2, 1fr);
-          }
-        }
-      `}</style>
+      <div className="rounded-lg border border-[#1E2535] bg-[#0F1219] p-4">
+        <div className="mb-2 text-sm font-semibold text-[#F4A623]">Variations</div>
+        {approvedVariations.length === 0 ? (
+          <div className="text-sm text-[#94A3B8]">No approved variations.</div>
+        ) : (
+          <div className="space-y-1 text-sm text-[#E2E8F8]">
+            {approvedVariations.map((v) => (
+              <div key={v.id} className="flex items-center justify-between border-b border-[#1E2535] py-1">
+                <span>{v.voNumber} · {v.description || v.trade}</span>
+                <span>{formatMoneyGBP(v.value)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="rounded-lg border border-[#1E2535] bg-[#0F1219] p-4">
+        <div className="mb-2 text-sm font-semibold text-[#F4A623]">Payment Tracker</div>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="text-xs uppercase text-[#94A3B8]">
+              <tr>
+                <th className="px-2 py-1 text-left">Certificate</th>
+                <th className="px-2 py-1 text-left">Issued</th>
+                <th className="px-2 py-1 text-left">Amount</th>
+                <th className="px-2 py-1 text-left">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {certificates.map((c) => (
+                <tr key={c.id} className="border-t border-[#1E2535] text-[#E2E8F8]">
+                  <td className="px-2 py-1">{c.certificate_number || '—'}</td>
+                  <td className="px-2 py-1">{formatIsoDateDmy(c.date_issued)}</td>
+                  <td className="px-2 py-1">{formatMoneyGBP(num(c.amount))}</td>
+                  <td className="px-2 py-1">{c.status || '—'}</td>
+                </tr>
+              ))}
+              {certificates.length === 0 ? (
+                <tr>
+                  <td className="px-2 py-2 text-[#94A3B8]" colSpan={4}>
+                    No certificates yet.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
     </div>
   )
-}
-
-const DOCUMENT_FOLDERS = [
-  'Contracts',
-  'Drawings',
-  'Building Control',
-  'Invoices',
-  'Photos',
-  'Other',
-] as const
-
-type DocumentFolder = (typeof DOCUMENT_FOLDERS)[number]
-
-const DOCUMENTS_BUCKET = 'project-documents'
-
-type DocumentRow = {
-  id: string
-  project_id: string
-  folder: string
-  file_name: string
-  storage_path: string
-  content_type: string | null
-  file_size: number | string | null
-  created_at: string | null
 }
 
 function safeFileNameForStorage(name: string) {
