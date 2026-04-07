@@ -1274,6 +1274,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                     min={0}
                                     max={100}
                                     step={0.5}
+                                    style={{ pointerEvents: 'auto' }}
                                     value={
                                       pctDraft[r.id] !== undefined
                                         ? pctDraft[r.id]
@@ -1425,6 +1426,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                                       min={0}
                                       max={100}
                                       step={0.5}
+                                      style={{ pointerEvents: 'auto' }}
                                       value={
                                         pctDraft[voKey] !== undefined
                                           ? pctDraft[voKey]
@@ -2199,10 +2201,6 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
         .pi.hv {
           border-color: rgba(244, 166, 35, 0.4);
           color: var(--ac);
-        }
-        .pi:disabled {
-          opacity: 0.35;
-          cursor: not-allowed;
         }
         .badge {
           display: inline-flex;
