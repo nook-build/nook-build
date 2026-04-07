@@ -656,13 +656,13 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     setSavingByRowId((s) => ({ ...s, [rowId]: true }))
     setRows((prev) =>
       prev.map((r) =>
-        r.id === rowId ? { ...r, percent_complete: pct, amount_due: amt } : r,
+        r.id === rowId ? { ...r, percentage: pct, amount: amt } : r,
       ),
     )
 
     const { error: saveErr } = await supabase
       .from('valuations')
-      .update({ percent_complete: pct, amount_due: amt })
+      .update({ percentage: pct, amount: amt }).then(r => console.log("UPDATE RESULT", JSON.stringify(r)))
       .eq('id', rowId)
     setSavingByRowId((s) => ({ ...s, [rowId]: false }))
     if (saveErr) {
