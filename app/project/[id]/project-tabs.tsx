@@ -481,6 +481,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   useEffect(() => {
     let cancelled = false
     async function loadOnce() {
+      if (document.activeElement?.tagName === 'INPUT') return
       setLoading(true)
       setError('')
       const [vRes, cRes, pRes, voRes] = await Promise.all([
