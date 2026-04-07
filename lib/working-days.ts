@@ -39,6 +39,23 @@ export function addUtcWorkingDays(startMs: number, workingDaysToAdd: number): nu
 }
 
 /**
+ * Advance an ISO date (`YYYY-MM-DD`) by N UTC working days (Mon–Fri).
+ * Returns an ISO date string (`YYYY-MM-DD`).
+ */
+export function addWorkingDaysIso(isoDate: string, days: number): string {
+  if (days <= 0 || !Number.isFinite(days)) return isoDate.slice(0, 10)
+  const d = new Date(`${isoDate.slice(0, 10)}T12:00:00Z`)
+  let added = 0
+  const target = Math.floor(days)
+  while (added < target) {
+    d.setUTCDate(d.getUTCDate() + 1)
+    const day = d.getUTCDay()
+    if (day !== 0 && day !== 6) added++
+  }
+  return d.toISOString().slice(0, 10)
+}
+
+/**
  * Count Mon–Fri UTC calendar days in [startMs, endMs): same day grid as
  * {@link addUtcWorkingDays} (midnight UTC per date). Use for spans between ISO dates.
  */

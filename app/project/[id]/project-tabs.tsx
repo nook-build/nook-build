@@ -11,12 +11,11 @@ import {
   type ReactNode,
 } from 'react'
 import {
-  formatInstantAsDate,
-  formatIsoDateOnly,
   formatMoneyGBP,
 } from '@/lib/format'
 import { supabase } from '@/lib/supabase'
 import {
+  addWorkingDaysIso,
   addUtcWorkingDays,
   countUtcWorkingDaysExclusiveEnd,
 } from '@/lib/working-days'
@@ -399,13 +398,7 @@ function formatPortalWeekRangeFromStart(
   const base = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
   const start = base + (weekOrdinal1Based - 1) * 7 * 86400000
   const end = start + 6 * 86400000
-  const fmt = (ms: number) =>
-    new Date(ms).toLocaleDateString('en-GB', {
-      day: 'numeric',
-      month: 'short',
-      year: '2-digit',
-      timeZone: 'UTC',
-    })
+  const fmt = (ms: number) => formatIsoDateDmy(new Date(ms).toISOString().slice(0, 10))
   return `${fmt(start)} – ${fmt(end)}`
 }
 
@@ -1710,9 +1703,9 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                     <tr key={`pt-${c.id}`} style={overdue ? { background: 'rgba(255,61,87,.03)' } : undefined}>
                       <td>{c.certificate_number}</td>
                       <td className="td-mono">{formatMoneyGBP(num(c.amount))}</td>
-                      <td className="td-mono">{c.date_issued ? formatIsoDateOnly(c.date_issued.slice(0, 10)) : '—'}</td>
-                      <td className="td-mono">{c.due_date ? formatIsoDateOnly(c.due_date.slice(0, 10)) : '—'}</td>
-                      <td className="td-mono">{c.date_paid ? formatIsoDateOnly(c.date_paid.slice(0, 10)) : '—'}</td>
+                      <td className="td-mono">{formatIsoDateDmy(c.date_issued)}</td>
+                      <td className="td-mono">{formatIsoDateDmy(c.due_date)}</td>
+                      <td className="td-mono">{formatIsoDateDmy(c.date_paid)}</td>
                       <td>
                         <span className={`badge ${isPaid ? 'b-gr' : 'b-ac'}`}>{isPaid ? 'PAID' : 'UNPAID'}</span>
                       </td>
@@ -2911,7 +2904,7 @@ function DocumentsTab({ project }: { project: ProjectDetail }) {
                         {formatFileSize(d.file_size)}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3.5 text-[#94A3B8]">
-                        {formatInstantAsDate(d.created_at)}
+                        {formatInstantDmy(d.created_at)}
                       </td>
                       <td className="whitespace-nowrap px-4 py-3.5 pr-5 text-right">
                         <DocumentDownloadButton
@@ -3521,7 +3514,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     const endMs = utcMillisFromIsoDate(project.handover_date)
     if (endMs == null) return '—'
     const shifted = addUtcWorkingDays(endMs, totalProgrammeShift)
-    return formatIsoDateOnly(new Date(shifted).toISOString())
+    return formatIsoDateDmy(new Date(shifted).toISOString())
   }, [project.handover_date, totalProgrammeShift])
 
   const valuationWeekOpts = useMemo(
@@ -3677,7 +3670,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                 {programmeImpactLoading ? '…' : revisedEndDate}
               </div>
               <div className="plp-sub">
-                Original: {formatIsoDateOnly(project.handover_date)}
+                Original: {formatIsoDateDmy(project.handover_date)}
               </div>
             </div>
             <div className="plp-card accent">
@@ -3815,11 +3808,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
                   >
                     <div className="wk-num">W{w.week}</div>
                     <div className="wk-date">
-                      {w.date.toLocaleDateString('en-GB', {
-                        day: '2-digit',
-                        month: 'short',
-                        timeZone: 'UTC',
-                      })}
+                      {formatIsoDateDmy(w.date.toISOString().slice(0, 10))}
                     </div>
                   </div>
                 ))}
@@ -4507,7 +4496,7 @@ function MessagesTab({ project }: { project: ProjectDetail }) {
                           {m.content}
                         </p>
                         <p className="mt-2 text-right text-[11px] text-[#64748B]">
-                          {formatInstantAsDate(m.created_at)}
+                          {formatInstantDmy(m.created_at)}
                         </p>
                       </article>
                     </li>
@@ -4562,6 +4551,46 @@ function utcMillisFromIsoDate(iso: string | null | undefined): number | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso.trim())
   if (!m) return null
   return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+}
+
+function formatIsoDateDmy(iso: string | null | undefined): string {
+  const ms = utcMillisFromIsoDate(iso)
+  if (ms == null) return '—'
+  const d = new Date(ms)
+  const dd = String(d.getUTCDate()).padStart(2, '0')
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const yyyy = d.getUTCFullYear()
+  return `${dd}/${mm}/${yyyy}`
+}
+
+function formatInstantDmy(instant: string | null | undefined): string {
+  if (!instant) return '—'
+  const t = Date.parse(instant)
+  if (!Number.isFinite(t)) return '—'
+  const d = new Date(t)
+  const dd = String(d.getUTCDate()).padStart(2, '0')
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0')
+  const yyyy = d.getUTCFullYear()
+  return `${dd}/${mm}/${yyyy}`
+}
+
+function parseDmyToIso(text: string): string | null {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(text.trim())
+  if (!m) return null
+  const dd = Number(m[1])
+  const mm = Number(m[2])
+  const yyyy = Number(m[3])
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31 || yyyy < 1000) return null
+  const ms = Date.UTC(yyyy, mm - 1, dd)
+  const d = new Date(ms)
+  if (
+    d.getUTCFullYear() !== yyyy ||
+    d.getUTCMonth() + 1 !== mm ||
+    d.getUTCDate() !== dd
+  ) {
+    return null
+  }
+  return `${yyyy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`
 }
 
 /** Delays table: unit days → duration as Mon–Fri days; weeks → duration × 5 working days. */
@@ -5015,15 +5044,10 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     return delayW + varProg
   }, [delayLogs, variationRows])
 
-  const originalHandoverMs = utcMillisFromIsoDate(project.handover_date)
   const revisedHandoverIso = useMemo(() => {
-    if (originalHandoverMs == null) return null
-    return new Date(
-      addUtcWorkingDays(originalHandoverMs, totalHandoverWorkingShift),
-    )
-      .toISOString()
-      .slice(0, 10)
-  }, [originalHandoverMs, totalHandoverWorkingShift])
+    if (!project.handover_date) return null
+    return addWorkingDaysIso(project.handover_date, totalHandoverWorkingShift)
+  }, [project.handover_date, totalHandoverWorkingShift])
 
   const effectiveHandoverIso =
     revisedHandoverIso ?? project.handover_date ?? null
@@ -5115,15 +5139,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     delayUnit === 'weeks' ? delayPreviewBase * 5 : delayPreviewBase
 
   function fmtPortalDate(iso: string | null | undefined) {
-    if (!iso) return '—'
-    const ms = utcMillisFromIsoDate(iso)
-    if (ms == null) return '—'
-    return new Date(ms).toLocaleDateString('en-GB', {
-      day: 'numeric',
-      month: 'short',
-      year: 'numeric',
-      timeZone: 'UTC',
-    })
+    return formatIsoDateDmy(iso)
   }
 
   function fmtPortalDateUpper(iso: string | null | undefined) {
@@ -5254,6 +5270,16 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     if (!varDesc.trim()) return
     const value = Math.max(0, parseFloat(varValue || '0'))
     const days = Math.max(0, parseInt(varDays || '0', 10))
+    const dateRaisedIso = parseDmyToIso(varDate)
+    const approvalIso = parseDmyToIso(varApprovalDate)
+    if (varDate.trim() && !dateRaisedIso) {
+      setLoadError('Date raised must be DD/MM/YYYY.')
+      return
+    }
+    if (varApprovalDate.trim() && !approvalIso) {
+      setLoadError('Client approval date must be DD/MM/YYYY.')
+      return
+    }
     const countRes = await supabase
       .from('variations')
       .select('id', { count: 'exact', head: true })
@@ -5272,8 +5298,8 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       value,
       prog_days: days,
       status: varStatus,
-      date_raised: varDate || new Date().toISOString().slice(0, 10),
-      client_approval_date: varApprovalDate || null,
+      date_raised: dateRaisedIso ?? new Date().toISOString().slice(0, 10),
+      client_approval_date: approvalIso,
       created_at: new Date().toISOString(),
     }
     const insertRes = await supabase
@@ -5373,12 +5399,16 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
   function addInspection(e: FormEvent) {
     e.preventDefault()
     if (!bcType.trim()) return
+    if (bcDate.trim() && !parseDmyToIso(bcDate)) {
+      setLoadError('Inspection date must be DD/MM/YYYY.')
+      return
+    }
     setBcInspections((prev) => [
       ...prev,
       {
         id: crypto.randomUUID(),
         inspectionType: bcType.trim(),
-        date: bcDate,
+        date: parseDmyToIso(bcDate) ?? '',
         inspectorName: bcInspector.trim(),
         result: bcResult,
         notes: bcNotes.trim(),
@@ -5483,7 +5513,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           <div className="sv" style={{ color: 'var(--rd)' }}>
             {loading ? '…' : handoverStat}
           </div>
-          <div className="ss">{formatIsoDateOnly(revisedHandoverIso ?? project.handover_date)}</div>
+          <div className="ss">{formatIsoDateDmy(revisedHandoverIso ?? project.handover_date)}</div>
         </div>
       </div>
 
@@ -5576,8 +5606,8 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       </div>
 
       <div className="dates-row">
-        <div><div className="d-l">Start</div><div className="d-v ac">{formatIsoDateOnly(project.start_date).toUpperCase()}</div></div>
-        <div><div className="d-l">Handover</div><div className="d-v gr">{formatIsoDateOnly(revisedHandoverIso ?? project.handover_date).toUpperCase()}</div></div>
+        <div><div className="d-l">Start</div><div className="d-v ac">{formatIsoDateDmy(project.start_date).toUpperCase()}</div></div>
+        <div><div className="d-l">Handover</div><div className="d-v gr">{formatIsoDateDmy(revisedHandoverIso ?? project.handover_date).toUpperCase()}</div></div>
         <div><div className="d-l">Duration</div><div className="d-v bl">{durationWeeks != null ? `${durationWeeks} WEEKS` : '—'}</div></div>
         <div><div className="d-l">Deposit Paid</div><div className="d-v tl">{depositAmount > 0 ? formatMoneyGBP(depositAmount) : '—'}</div></div>
       </div>
@@ -5889,8 +5919,8 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
                   <button type="submit" style={{ background: '#F4A623', border: 'none', color: '#000', borderRadius: 6, padding: '7px 10px', fontFamily: 'DM Mono, monospace', fontSize: 11 }}>+ Add VO</button>
                 </div>
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-                  <input type="date" value={varDate} onFocus={(e) => e.currentTarget.showPicker?.()} onClick={(e) => e.currentTarget.showPicker?.()} onChange={(e) => setVarDate(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
-                  <input type="date" value={varApprovalDate} onFocus={(e) => e.currentTarget.showPicker?.()} onClick={(e) => e.currentTarget.showPicker?.()} onChange={(e) => setVarApprovalDate(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
+                  <input type="text" inputMode="numeric" placeholder="DD/MM/YYYY" value={varDate} onChange={(e) => setVarDate(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
+                  <input type="text" inputMode="numeric" placeholder="DD/MM/YYYY" value={varApprovalDate} onChange={(e) => setVarApprovalDate(e.target.value)} style={{ background: '#0F1219', border: `1px solid ${border}`, borderRadius: 6, padding: '7px 10px', color: '#E2E8F8', fontFamily: 'DM Mono, monospace' }} />
                 </div>
               </form>
               <div style={{ overflowX: 'auto' }}>
@@ -5985,7 +6015,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
                 </div>
                 <div>
                   <div className="sl" style={{ marginBottom: 5 }}>Inspection Date</div>
-                  <input className="delay-input mono" type="date" value={bcDate} onChange={(e) => setBcDate(e.target.value)} />
+                  <input className="delay-input mono" type="text" inputMode="numeric" placeholder="DD/MM/YYYY" value={bcDate} onChange={(e) => setBcDate(e.target.value)} />
                 </div>
                 <div>
                   <div className="sl" style={{ marginBottom: 5 }}>Inspector Name</div>
