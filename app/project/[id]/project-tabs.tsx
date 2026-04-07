@@ -464,17 +464,9 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   const [error, setError] = useState('')
   const [savingByRowId, setSavingByRowId] = useState<Record<string, boolean>>({})
   const [periodOverride, setPeriodOverride] = useState<string | null>(null)
-  const [pctDraft, setPctDraft] = useState<Record<string, string>>({})
-  const [amtDraft, setAmtDraft] = useState<Record<string, number>>({})
   const [lockedIds, setLockedIds] = useState<Set<string>>(new Set())
   const lockStorageKey = `nook-valuation-locks:${project.id}`
-  const isMountedRef = useRef(true)
-
-  useEffect(() => {
-    return () => {
-      isMountedRef.current = false
-    }
-  }, [])
+  const pctInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
 
   useEffect(() => {
     try {
@@ -486,62 +478,64 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     }
   }, [lockStorageKey])
 
-  const loadRowsOnce = useCallback(async () => {
-    setLoading(true)
-    setError('')
-    const [vRes, cRes, pRes, voRes] = await Promise.all([
-      supabase
-        .from('valuations')
-        .select('*')
-        .eq('project_id', project.id)
-        .order('line_order', { ascending: true }),
-      supabase
-        .from('certificates')
-        .select('*')
-        .eq('project_id', project.id)
-        .order('date_issued', { ascending: true }),
-      supabase
-        .from('programme_items')
-        .select('trade_name, phase')
-        .eq('project_id', project.id)
-        .order('start_week', { ascending: true }),
-      supabase
-        .from('variations')
-        .select('id, vo_number, description, trade, value, status')
-        .eq('project_id', project.id),
-    ])
-
-    if (!isMountedRef.current) return
-
-    const errs = [
-      vRes.error?.message,
-      cRes.error?.message,
-      pRes.error?.message,
-      voRes.error?.message,
-    ].filter(Boolean)
-    if (errs.length > 0) setError(errs.join(' · '))
-
-    setRows(normalizeValuationRows((vRes.data ?? []) as Record<string, unknown>[]))
-    setCertificates((cRes.data ?? []) as CertificateRecord[])
-    setProgrammeItems((pRes.data ?? []) as { trade_name: string; phase: string }[])
-
-    const voRows = ((voRes.data ?? []) as Record<string, unknown>[]).filter(
-      (v) => String(v.status ?? '').toLowerCase() === 'approved',
-    )
-    setApprovedVariations(
-      voRows.map((v) => ({
-        id: String(v.id ?? ''),
-        voNumber: String(v.vo_number ?? '').trim() || 'VO',
-        description: String(v.description ?? ''),
-        trade: String(v.trade ?? '—'),
-        value: num(v.value as number | string | null | undefined),
-      })),
-    )
-    setLoading(false)
-  }, [project.id])
-
   useEffect(() => {
-    void loadRowsOnce()
+    let cancelled = false
+    async function loadOnce() {
+      setLoading(true)
+      setError('')
+      const [vRes, cRes, pRes, voRes] = await Promise.all([
+        supabase
+          .from('valuations')
+          .select('*')
+          .eq('project_id', project.id)
+          .order('line_order', { ascending: true }),
+        supabase
+          .from('certificates')
+          .select('*')
+          .eq('project_id', project.id)
+          .order('date_issued', { ascending: true }),
+        supabase
+          .from('programme_items')
+          .select('trade_name, phase')
+          .eq('project_id', project.id)
+          .order('start_week', { ascending: true }),
+        supabase
+          .from('variations')
+          .select('id, vo_number, description, trade, value, status')
+          .eq('project_id', project.id),
+      ])
+      if (cancelled) return
+
+      const errs = [
+        vRes.error?.message,
+        cRes.error?.message,
+        pRes.error?.message,
+        voRes.error?.message,
+      ].filter(Boolean)
+      if (errs.length > 0) setError(errs.join(' · '))
+
+      setRows(normalizeValuationRows((vRes.data ?? []) as Record<string, unknown>[]))
+      setCertificates((cRes.data ?? []) as CertificateRecord[])
+      setProgrammeItems((pRes.data ?? []) as { trade_name: string; phase: string }[])
+
+      const voRows = ((voRes.data ?? []) as Record<string, unknown>[]).filter(
+        (v) => String(v.status ?? '').toLowerCase() === 'approved',
+      )
+      setApprovedVariations(
+        voRows.map((v) => ({
+          id: String(v.id ?? ''),
+          voNumber: String(v.vo_number ?? '').trim() || 'VO',
+          description: String(v.description ?? ''),
+          trade: String(v.trade ?? '—'),
+          value: num(v.value as number | string | null | undefined),
+        })),
+      )
+      setLoading(false)
+    }
+    void loadOnce()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   const chronWeeks = useMemo(() => valuationChronologicalWeekLabels(rows), [rows])
@@ -593,12 +587,8 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   }, [activeRows, phaseForDescription, phaseOrder])
 
   const weekCertTotal = useMemo(
-    () =>
-      activeRows.reduce(
-        (s, r) => s + (amtDraft[r.id] ?? (num(r.amount_due) > 0 ? num(r.amount_due) : 0)),
-        0,
-      ),
-    [activeRows, amtDraft],
+    () => activeRows.reduce((s, r) => s + num(r.amount_due), 0),
+    [activeRows],
   )
 
   const paidTotal = useMemo(
@@ -633,36 +623,29 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     }
   }
 
-  function patchRowPctLocal(rowId: string, pctRaw: string) {
-    const trimmed = pctRaw.trim()
+  async function handlePctBlur(row: ValuationRecord) {
+    if (lockedIds.has(row.id)) return
+    const el = pctInputRefs.current[row.id]
+    if (!el) return
+    const raw = el.value.trim()
     const parsed =
-      trimmed === '' || trimmed === '.' || trimmed === '-' ? 0 : parseFloat(trimmed)
+      raw === '' || raw === '.' || raw === '-' ? 0 : parseFloat(raw)
     const pct = Number.isNaN(parsed) ? 0 : Math.min(100, Math.max(0, parsed))
-    setRows((prev) =>
-      prev.map((r) => {
-        if (r.id !== rowId) return r
-        const cv = num(r.contract_value)
-        const amt = Math.round(((pct / 100) * cv) * 100) / 100
-        return { ...r, percent_complete: pct, amount_due: amt }
-      }),
-    )
-  }
-
-  async function saveRow(rowId: string, pctRaw: string) {
-    const trimmed = pctRaw.trim()
-    const parsed =
-      trimmed === '' || trimmed === '.' || trimmed === '-' ? 0 : parseFloat(trimmed)
-    const pct = Number.isNaN(parsed) ? 0 : Math.min(100, Math.max(0, parsed))
-    const row = rows.find((r) => r.id === rowId)
-    if (!row) return
     const cv = num(row.contract_value)
     const amt = Math.round(((pct / 100) * cv) * 100) / 100
-    setSavingByRowId((s) => ({ ...s, [rowId]: true }))
+
+    setRows((prev) =>
+      prev.map((r) =>
+        r.id === row.id ? { ...r, percent_complete: pct, amount_due: amt } : r,
+      ),
+    )
+
+    setSavingByRowId((s) => ({ ...s, [row.id]: true }))
     const { error: saveErr } = await supabase
       .from('valuations')
       .update({ percent_complete: pct, amount_due: amt })
-      .eq('id', rowId)
-    setSavingByRowId((s) => ({ ...s, [rowId]: false }))
+      .eq('id', row.id)
+    setSavingByRowId((s) => ({ ...s, [row.id]: false }))
     if (saveErr) setError(saveErr.message)
   }
 
@@ -724,7 +707,6 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
             onClick={() => {
               const idx = Math.max(0, chronWeeks.indexOf(activePeriod ?? '') - 1)
               setPeriodOverride(chronWeeks[idx] ?? null)
-              void loadRowsOnce()
             }}
           >
             Prev
@@ -738,7 +720,6 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                 chronWeeks.indexOf(activePeriod ?? '') + 1,
               )
               setPeriodOverride(chronWeeks[idx] ?? null)
-              void loadRowsOnce()
             }}
           >
             Next
@@ -788,14 +769,9 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                         ? prevDrawnForTrade(rows, r.description ?? '', activePeriod, chronWeeks)
                         : 0
                       const thisWk = num(r.amount_due)
-                      const thisWkDisplay = amtDraft[r.id] ?? (thisWk > 0 ? thisWk : null)
-                      const claimed = prev + (thisWkDisplay ?? 0)
+                      const claimed = prev + thisWk
                       const bal = Math.max(0, cv - claimed)
                       const locked = lockedIds.has(r.id)
-                      const pctValue =
-                        pctDraft[r.id] !== undefined
-                          ? pctDraft[r.id]
-                          : String(pctThisWeek(r) ?? 0)
                       return (
                         <tr key={r.id} className="border-t border-[#1E2535] text-[#E2E8F8]">
                           <td className="px-3 py-2">{r.description ?? '—'}</td>
@@ -807,43 +783,21 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                           </td>
                           <td className="px-3 py-2">
                             <input
+                              ref={(el) => {
+                                pctInputRefs.current[r.id] = el
+                              }}
                               type="number"
                               min={0}
                               max={100}
                               step={0.5}
+                              defaultValue={0}
                               disabled={locked}
-                              value={pctValue}
-                              onChange={(e) => {
-                                const v = e.target.value
-                                const pct = Math.min(
-                                  100,
-                                  Math.max(0, parseFloat(v.trim()) || 0),
-                                )
-                                setPctDraft((d) => ({ ...d, [r.id]: v }))
-                                setAmtDraft((d) => ({
-                                  ...d,
-                                  [r.id]: Math.round(((pct / 100) * cv) * 100) / 100,
-                                }))
-                                patchRowPctLocal(r.id, v)
-                              }}
-                              onBlur={(e) => {
-                                const v = e.target.value
-                                const pct = Math.min(
-                                  100,
-                                  Math.max(0, parseFloat(v.trim()) || 0),
-                                )
-                                setPctDraft((d) => ({ ...d, [r.id]: v }))
-                                setAmtDraft((d) => ({
-                                  ...d,
-                                  [r.id]: Math.round(((pct / 100) * cv) * 100) / 100,
-                                }))
-                                void saveRow(r.id, v)
-                              }}
+                              onBlur={() => void handlePctBlur(r)}
                               className="w-[72px] rounded border border-[#F4A623] bg-[#1E2535] px-2 py-1 text-center text-xs text-[#F4A623]"
                             />
                           </td>
                           <td className="px-3 py-2">
-                            {thisWkDisplay != null ? formatMoneyGBP(thisWkDisplay) : '—'}
+                            {thisWk > 0 ? formatMoneyGBP(thisWk) : '—'}
                           </td>
                           <td className="px-3 py-2">{formatMoneyGBP(claimed)}</td>
                           <td className="px-3 py-2">{formatMoneyGBP(bal)}</td>
