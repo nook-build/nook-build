@@ -11,12 +11,44 @@ export default function LoginPage() {
   async function handleLogin() {
     setLoading(true)
     setError('')
-    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    const normalizedEmail = email.trim().toLowerCase()
+    const { data, error } = await supabase.auth.signInWithPassword({
+      email: normalizedEmail,
+      password,
+    })
     if (error) {
       setError(error.message)
       setLoading(false)
     } else {
-      window.location.href = '/dashboard'
+      const authedEmail = data.user?.email?.trim().toLowerCase() ?? normalizedEmail
+      if (authedEmail === 'catalin@nook-build.co.uk') {
+        window.location.href = '/dashboard'
+        return
+      }
+
+      const { data: profile, error: profileError } = await supabase
+        .from('user_profiles')
+        .select('project_id')
+        .eq('email', authedEmail)
+        .maybeSingle()
+
+      if (profileError) {
+        setError(profileError.message)
+        setLoading(false)
+        return
+      }
+
+      const projectId =
+        profile && typeof profile.project_id === 'string'
+          ? profile.project_id.trim()
+          : ''
+      if (!projectId) {
+        setError('No project assigned to this account.')
+        setLoading(false)
+        return
+      }
+
+      window.location.href = `/project/${projectId}`
     }
   }
 
