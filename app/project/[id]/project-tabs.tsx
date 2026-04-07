@@ -10,9 +10,8 @@ import {
   type FormEvent,
   type ReactNode,
 } from 'react'
-import {
-  formatMoneyGBP,
-} from '@/lib/format'
+import { formatMoneyGBP } from '@/lib/format'
+import { ValuationThisWeekPctModal } from './valuation-this-week-pct-modal'
 import { supabase } from '@/lib/supabase'
 import {
   addWorkingDaysIso,
@@ -485,7 +484,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
   const [periodOverride, setPeriodOverride] = useState<string | null>(null)
   const [lockedIds, setLockedIds] = useState<Set<string>>(new Set())
   const lockStorageKey = `nook-valuation-locks:${project.id}`
-  const pctInputRefs = useRef<Record<string, HTMLInputElement | null>>({})
+  const [pctModalRowId, setPctModalRowId] = useState<string | null>(null)
 
   useEffect(() => {
     try {
@@ -642,31 +641,35 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     }
   }
 
-  async function handlePctBlur(row: ValuationRecord) {
-    if (lockedIds.has(row.id)) return
-    const el = pctInputRefs.current[row.id]
-    if (!el) return
-    const raw = el.value.trim()
-    const parsed =
-      raw === '' || raw === '.' || raw === '-' ? 0 : parseFloat(raw)
-    const pct = Number.isNaN(parsed) ? 0 : Math.min(100, Math.max(0, parsed))
+  async function savePctFromModal(rowId: string, pct: number) {
+    if (lockedIds.has(rowId)) return
+    const row = rows.find((r) => r.id === rowId)
+    if (!row) return
     const cv = num(row.contract_value)
     const amt = Math.round(((pct / 100) * cv) * 100) / 100
 
+    setSavingByRowId((s) => ({ ...s, [rowId]: true }))
     setRows((prev) =>
       prev.map((r) =>
-        r.id === row.id ? { ...r, percent_complete: pct, amount_due: amt } : r,
+        r.id === rowId ? { ...r, percent_complete: pct, amount_due: amt } : r,
       ),
     )
 
-    setSavingByRowId((s) => ({ ...s, [row.id]: true }))
     const { error: saveErr } = await supabase
       .from('valuations')
       .update({ percent_complete: pct, amount_due: amt })
-      .eq('id', row.id)
-    setSavingByRowId((s) => ({ ...s, [row.id]: false }))
-    if (saveErr) setError(saveErr.message)
+      .eq('id', rowId)
+    setSavingByRowId((s) => ({ ...s, [rowId]: false }))
+    if (saveErr) {
+      setError(saveErr.message)
+      return
+    }
+    setPctModalRowId(null)
   }
+
+  const pctModalRow = pctModalRowId
+    ? rows.find((r) => r.id === pctModalRowId)
+    : null
 
   async function toggleLock(row: ValuationRecord) {
     const next = new Set(lockedIds)
@@ -801,19 +804,16 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
                             {(r.status ?? '').toLowerCase() === 'paid' ? 'Complete' : 'Active'}
                           </td>
                           <td className="px-3 py-2">
-                            <input
-                              ref={(el) => {
-                                pctInputRefs.current[r.id] = el
-                              }}
-                              type="number"
-                              min={0}
-                              max={100}
-                              step={0.5}
-                              defaultValue={0}
+                            <button
+                              type="button"
                               disabled={locked}
-                              onBlur={() => void handlePctBlur(r)}
-                              className="w-[72px] rounded border border-[#F4A623] bg-[#1E2535] px-2 py-1 text-center text-xs text-[#F4A623]"
-                            />
+                              onClick={() => {
+                                if (!locked) setPctModalRowId(r.id)
+                              }}
+                              className="min-w-[56px] rounded border border-[#F4A623] bg-[#1E2535] px-2 py-1 text-center text-xs text-[#F4A623] hover:bg-[#1a2233] disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              {`${(pctThisWeek(r) ?? 0).toFixed(1)}%`}
+                            </button>
                           </td>
                           <td className="px-3 py-2">
                             {thisWk > 0 ? formatMoneyGBP(thisWk) : '—'}
@@ -876,6 +876,22 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
           </div>
         )}
       </div>
+
+      <ValuationThisWeekPctModal
+        open={pctModalRow != null}
+        onClose={() => setPctModalRowId(null)}
+        tradeName={pctModalRow?.description?.trim() || '—'}
+        contractValueNum={pctModalRow ? num(pctModalRow.contract_value) : 0}
+        initialPct={
+          pctModalRow ? num(pctModalRow.percent_complete ?? 0) : 0
+        }
+        saving={
+          pctModalRow ? Boolean(savingByRowId[pctModalRow.id]) : false
+        }
+        onSave={(pct) => {
+          if (pctModalRowId) void savePctFromModal(pctModalRowId, pct)
+        }}
+      />
 
       <div className="rounded-lg border border-[#1E2535] bg-[#0F1219] p-4">
         <div className="mb-2 text-sm font-semibold text-[#F4A623]">Payment Tracker</div>
