@@ -703,11 +703,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
       setError(saveErr.message)
       return
     }
-    setDraftAmounts((d) => {
-      const next = { ...d }
-      delete next[r.id]
-      return next
-    })
+    // keep draftAmounts after save
   }
 
   async function toggleLock(row: ValuationRecord) {
