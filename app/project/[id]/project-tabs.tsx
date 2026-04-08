@@ -407,8 +407,8 @@ function valuationChronologicalWeekLabels(rows: ValuationRecord[]): string[] {
   const byLabel = new Map<string, number>()
   for (const r of rows) {
     const t = r.created_at ? Date.parse(r.created_at) : 0
-    const prev = byLabel.get(String(r.week_number))
-    if (prev === undefined || t < prev) byLabel.set(String(r.week_number), t)
+    const prev = byLabel.get(r.week_label)
+    if (prev === undefined || t < prev) byLabel.set(r.week_label, t)
   }
   return [...byLabel.entries()]
     .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
