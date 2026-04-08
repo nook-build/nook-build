@@ -21,11 +21,6 @@ export default function LoginPage() {
       setLoading(false)
     } else {
       const authedEmail = data.user?.email?.trim().toLowerCase() ?? normalizedEmail
-      if (authedEmail === 'admin@nook-build.com' || authedEmail === 'info@nook-build.co.uk' || profile?.role === 'admin') {
-        window.location.href = '/dashboard'
-        return
-      }
-
       const { data: profile, error: profileError } = await supabase
         .from('user_profiles')
         .select('project_id, role')
