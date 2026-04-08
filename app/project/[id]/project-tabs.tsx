@@ -146,6 +146,14 @@ type CertificateRecord = {
   status: string
 }
 
+function isPaidCertificate(
+  c: Pick<CertificateRecord, 'status' | 'date_paid'>,
+): boolean {
+  const status = String(c.status ?? '').trim().toLowerCase()
+  const paidDate = String(c.date_paid ?? '').trim()
+  return status === 'paid' || paidDate.length > 0
+}
+
 type MessageRecord = {
   id: string
   project_id: string
@@ -633,9 +641,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     () =>
       certificates.reduce(
         (s, c) =>
-          (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
-            ? s + num(c.amount)
-            : s,
+          isPaidCertificate(c) ? s + num(c.amount) : s,
         0,
       ),
     [certificates],
@@ -645,9 +651,7 @@ function ValuationTab({ project }: { project: ProjectDetail }) {
     () =>
       certificates.reduce(
         (s, c) =>
-          (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
-            ? s
-            : s + num(c.amount),
+          isPaidCertificate(c) ? s : s + num(c.amount),
         0,
       ),
     [certificates],
@@ -1984,10 +1988,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
 
   const actualByPeriod = useMemo(() => {
     const paid = certificates
-      .filter(
-        (c) =>
-          (c.status ?? '').toLowerCase() === 'paid' || Boolean(c.date_paid),
-      )
+      .filter((c) => isPaidCertificate(c))
       .sort((a, b) =>
         (a.date_issued ?? '').localeCompare(b.date_issued ?? ''),
       )
@@ -2007,9 +2008,7 @@ function ProgrammeTab({ project }: { project: ProjectDetail }) {
     () =>
       certificates.reduce(
         (s, c) =>
-          (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
-            ? s + num(c.amount)
-            : s,
+          isPaidCertificate(c) ? s + num(c.amount) : s,
         0,
       ),
     [certificates],
@@ -3464,9 +3463,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     () =>
       certificates.reduce(
         (s, c) =>
-          (c.status ?? '').toLowerCase() === 'paid' || c.date_paid
-            ? s + num(c.amount)
-            : s,
+          isPaidCertificate(c) ? s + num(c.amount) : s,
         0,
       ),
     [certificates],
@@ -3790,7 +3787,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     let plannedCumul = 0
     let actualCumul = 0
     const paidCerts = certificates
-      .filter((c) => (c.status ?? '').toLowerCase() === 'paid' || c.date_paid)
+      .filter((c) => isPaidCertificate(c))
       .sort((a, b) => {
         const am = utcMillisFromIsoDate(a.date_issued) ?? 0
         const bm = utcMillisFromIsoDate(b.date_issued) ?? 0
