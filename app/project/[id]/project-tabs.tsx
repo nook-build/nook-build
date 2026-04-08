@@ -121,7 +121,7 @@ const inputClass =
 type ValuationRecord = {
   id: string
   project_id: string
-  week_label: string
+  week_number: number | null
   description: string | null
   contract_value: number | string | null
   /** This week % (DB column `percentage`). */
