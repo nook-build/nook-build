@@ -1067,7 +1067,7 @@ function DocumentsTab({ project }: { project: ProjectDetail }) {
     return () => {
       cancelled = true
     }
-  }, [project.id])
+  })
 
   const counts = useMemo(() => {
     const c: Record<string, number> = { all: docs.length }
