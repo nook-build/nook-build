@@ -28,7 +28,7 @@ export default function LoginPage() {
 
       const { data: profile, error: profileError } = await supabase
         .from('user_profiles')
-        .select('project_id')
+        .select('project_id, role')
         .eq('email', authedEmail)
         .maybeSingle()
 
