@@ -3238,9 +3238,35 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
     async function load() {
       setLoading(true)
       setLoadError('')
+      async function fetchAllCertificatesForProject(): Promise<CertificateRecord[]> {
+        const pageSize = 1000
+        let from = 0
+        const allRows: CertificateRecord[] = []
+        while (true) {
+          const { data, error } = await supabase
+            .from('certificates')
+            .select('*')
+            .eq('project_id', project.id)
+            .order('date_issued', { ascending: true })
+            .range(from, from + pageSize - 1)
+          if (error) throw new Error(error.message)
+          const page = (data ?? []) as CertificateRecord[]
+          allRows.push(...page)
+          if (page.length < pageSize) break
+          from += pageSize
+        }
+        return allRows
+      }
+      let certsData: CertificateRecord[] = []
+      let certsErrorMessage = ''
+      try {
+        certsData = await fetchAllCertificatesForProject()
+      } catch (err) {
+        certsErrorMessage =
+          err instanceof Error ? err.message : 'Could not load certificates.'
+      }
       const [
         valuationsRes,
-        certsRes,
         delaysRes,
         varsRes,
       ] = await Promise.all([
@@ -3249,11 +3275,6 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           .select('*')
           .eq('project_id', project.id)
           .order('line_order', { ascending: true }),
-        supabase
-          .from('certificates')
-          .select('*')
-          .eq('project_id', project.id)
-          .order('date_issued', { ascending: true }),
         supabase
           .from('delays')
           .select('*')
@@ -3268,7 +3289,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
       if (cancelled) return
       const errors = [
         valuationsRes.error?.message,
-        certsRes.error?.message,
+        certsErrorMessage,
         delaysRes.error?.message,
         varsRes.error?.message,
       ].filter(Boolean)
@@ -3280,7 +3301,7 @@ function CommandCentrePanel({ project }: { project: ProjectDetail }) {
           (valuationsRes.data ?? []) as Record<string, unknown>[],
         ),
       )
-      setCertificates((certsRes.data ?? []) as CertificateRecord[])
+      setCertificates(certsData)
       console.log(
         '[delays] raw command-centre rows',
         (delaysRes.data ?? []) as Record<string, unknown>[],
