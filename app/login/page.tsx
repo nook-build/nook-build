@@ -11,46 +11,35 @@ export default function LoginPage() {
   async function handleLogin() {
     setLoading(true)
     setError('')
-    const normalizedEmail = email.trim().toLowerCase()
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email: normalizedEmail,
+    const { data, error: authError } = await supabase.auth.signInWithPassword({
+      email: email.trim().toLowerCase(),
       password,
     })
-    if (error) {
-      setError(error.message)
+    if (authError) {
+      setError(authError.message)
       setLoading(false)
+      return
+    }
+    const uid = data.user?.id
+    if (!uid) {
+      setError('Login failed.')
+      setLoading(false)
+      return
+    }
+    const { data: profile } = await supabase
+      .from('user_profiles')
+      .select('role, project_id')
+      .eq('id', uid)
+      .maybeSingle()
+    if (profile?.role === 'admin') {
+      window.location.href = '/dashboard'
+    } else if (profile?.project_id) {
+      window.location.href = `/project/${profile.project_id}`
     } else {
-      const authedEmail = data.user?.email?.trim().toLowerCase() ?? normalizedEmail
-      const { data: profile, error: profileError } = await supabase
-        .from('user_profiles')
-        .select('project_id, role')
-        .eq('email', authedEmail)
-        .maybeSingle()
-
-      if (profileError) {
-        setError(profileError.message)
-        setLoading(false)
-        return
-      }
-
-      if (profile?.role === 'admin') {
-        window.location.href = '/dashboard'
-        return
-      }
-      const projectId =
-        profile && typeof profile.project_id === 'string'
-          ? profile.project_id.trim()
-          : ''
-      if (!projectId) {
-        setError('No project assigned to this account.')
-        setLoading(false)
-        return
-      }
-
-      window.location.href = `/project/${projectId}`
+      setError('No project assigned to this account.')
+      setLoading(false)
     }
   }
-
   return (
     <div style={{
       minHeight: '100vh',
