@@ -21,7 +21,7 @@ export default function LoginPage() {
       setLoading(false)
     } else {
       const authedEmail = data.user?.email?.trim().toLowerCase() ?? normalizedEmail
-      if (authedEmail === 'admin@nook-build.com' || authedEmail === 'info@nook-build.co.uk') {
+      if (authedEmail === 'admin@nook-build.com' || authedEmail === 'info@nook-build.co.uk' || profile?.role === 'admin') {
         window.location.href = '/dashboard'
         return
       }
@@ -38,6 +38,10 @@ export default function LoginPage() {
         return
       }
 
+      if (profile?.role === 'admin') {
+        window.location.href = '/dashboard'
+        return
+      }
       const projectId =
         profile && typeof profile.project_id === 'string'
           ? profile.project_id.trim()
