@@ -404,15 +404,13 @@ function weekOptionsFromRows(rows: ValuationRecord[]): string[] {
 
 /** Oldest → newest week labels for valuation navigation. */
 function valuationChronologicalWeekLabels(rows: ValuationRecord[]): string[] {
-  const byLabel = new Map<string, number>()
+  const seen = new Map<string, number>()
   for (const r of rows) {
-    const t = r.created_at ? Date.parse(r.created_at) : 0
-    const prev = byLabel.get(r.week_label)
-    if (prev === undefined || t < prev) byLabel.set(r.week_label, t)
+    const wl = r.week_label
+    const wn = r.week_number ?? 999
+    if (!seen.has(wl)) seen.set(wl, wn)
   }
-  return [...byLabel.entries()]
-    .sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))
-    .map(([w]) => w)
+  return [...seen.entries()].sort((a,b)=>a[1]-b[1]).map(([w])=>w)
 }
 
 function formatPortalWeekRangeFromStart(
