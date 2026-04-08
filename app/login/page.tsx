@@ -21,7 +21,7 @@ export default function LoginPage() {
       setLoading(false)
     } else {
       const authedEmail = data.user?.email?.trim().toLowerCase() ?? normalizedEmail
-      if (authedEmail === 'catalin@nook-build.co.uk') {
+      if (authedEmail === 'admin@nook-build.com' || authedEmail === 'info@nook-build.co.uk') {
         window.location.href = '/dashboard'
         return
       }
