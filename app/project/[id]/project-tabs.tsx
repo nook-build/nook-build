@@ -122,6 +122,7 @@ type ValuationRecord = {
   id: string
   project_id: string
   week_number: number | null
+  week_label: string
   description: string | null
   contract_value: number | string | null
   /** This week % (DB column `percentage`). */
