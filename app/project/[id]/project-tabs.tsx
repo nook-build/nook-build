@@ -1,4 +1,20 @@
 'use client'
+const DOCUMENTS_BUCKET = 'project-documents'
+const DOCUMENT_FOLDERS = ['Contracts', 'Drawings', 'Invoices', 'Reports', 'Other'] as const
+type DocumentRow = {
+  id: string
+  project_id: string
+  file_name: string
+  file_path: string
+  folder: string
+  uploaded_at: string
+  size: number
+  file_size?: number
+  created_at?: string
+  storage_path: string
+}
+type DocumentFolder = 'Contracts' | 'Drawings' | 'Invoices' | 'Reports' | 'Other'
+
 
 import {
   Fragment,
@@ -363,6 +379,7 @@ function normalizeValuationRow(raw: Record<string, unknown>): ValuationRecord {
     id: String(raw.id),
     project_id: String(raw.project_id),
     week_label: weekLabel,
+    week_number: weekNumber,
     description: desc,
     contract_value: (raw.contract_value ?? null) as number | string | null,
     percentage: (raw.percentage ?? raw.percent_complete ?? null) as
@@ -1046,7 +1063,7 @@ function DocumentsTab({ project }: { project: ProjectDetail }) {
       setDocs((data ?? []) as DocumentRow[])
     }
     setLoading(false)
-  }, [project.id, activeSection])
+  }, [project.id])
 
   useEffect(() => {
     let cancelled = false
