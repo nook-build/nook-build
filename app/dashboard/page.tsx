@@ -1,3 +1,4 @@
+import { redirect } from 'next/navigation'
 import {
   formatInstantAsDate,
   formatIsoDateOnly,
@@ -30,6 +31,13 @@ function isActiveStatus(status: string | null | undefined) {
 }
 
 export default async function DashboardPage() {
+  const { data: { user } } = await supabase.auth.getUser()
+  if (user) {
+    const { data: profile } = await supabase.from('user_profiles').select('role, project_id').eq('id', user.id).maybeSingle()
+    if (profile?.role === 'client' && profile?.project_id) {
+      redirect('/project/' + profile.project_id)
+    }
+  }
   const { data, error } = await supabase
     .from('projects')
     .select('id, name, address, contract_value, start_date, status, created_at')
